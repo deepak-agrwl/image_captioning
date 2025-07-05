@@ -11,20 +11,12 @@ from transformers import CLIPProcessor, CLIPModel as TransformersCLIPModel, Dist
 from PIL import Image
 import timm
 import albumentations as A
-import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-import functools
-from itertools import islice
 
 # Configuration
 class CFG:
     image_path = "../../resources/input/flickr30k/flickr30k_images/flickr30k_images"
     captions_path = "../train_clip_model/captions.csv"
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    
-    # Parallel processing settings
-    num_workers = min(mp.cpu_count(), 8)  # Limit to 8 workers to avoid memory issues
-    batch_size = 32  # Process images/captions in batches
     
     # Custom model configuration (copied from the notebook)
     model_name = 'resnet50'
@@ -143,11 +135,6 @@ def load_and_preprocess_image(image_path, transforms):
     image = transforms(image=image)['image']
     return torch.tensor(image).permute(2, 0, 1).float().unsqueeze(0)
 
-def batch_generator(items, batch_size):
-    """Generate batches from a list of items"""
-    for i in range(0, len(items), batch_size):
-        yield items[i:i + batch_size]
-
 class EmbeddingGenerator:
     def __init__(self, model_type="pretrained_clip"):
         """
@@ -252,54 +239,8 @@ class EmbeddingGenerator:
             print(f"Error processing text '{text}': {e}")
             return None
 
-    def process_image_batch(self, image_batch):
-        """Process a batch of images"""
-        results = []
-        for image_file in image_batch:
-            try:
-                image_path = os.path.join(cfg.image_path, image_file)
-                embedding = self.get_image_embedding(image_path)
-                
-                if embedding is not None:
-                    results.append((image_file, embedding, True))
-                else:
-                    results.append((image_file, None, False))
-                    
-            except Exception as e:
-                print(f"Error processing {image_file}: {e}")
-                results.append((image_file, None, False))
-        
-        return results
-
-    def process_caption_batch(self, caption_batch):
-        """Process a batch of captions"""
-        results = []
-        for idx, row in caption_batch:
-            try:
-                image_name = row['image']
-                caption_number = row['caption_number']
-                caption = row['caption']
-
-                if pd.isna(caption):
-                    results.append((idx, image_name, caption_number, None, False))
-                    continue
-                    
-                caption = str(caption)
-                embedding = self.get_text_embedding(caption)
-                
-                if embedding is not None:
-                    results.append((idx, image_name, caption_number, embedding, True))
-                else:
-                    results.append((idx, image_name, caption_number, None, False))
-                    
-            except Exception as e:
-                print(f"Error processing caption {idx}: {e}")
-                results.append((idx, image_name, caption_number, None, False))
-        
-        return results
-
 def generate_image_embeddings(generator):
-    """Generate embeddings for all images with parallel processing"""
+    """Generate embeddings for all images"""
     print(f"Generating image embeddings using {generator.model_type}...")
     
     # Create output directory for image embeddings
@@ -309,60 +250,35 @@ def generate_image_embeddings(generator):
     # Get all image files
     image_files = [f for f in os.listdir(cfg.image_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
     
-    print(f"Generating embeddings for {len(image_files)} images using {cfg.num_workers} workers...")
+    print(f"Generating embeddings for {len(image_files)} images...")
     
     successful_count = 0
     failed_count = 0
     
-    # Process images in batches with parallel processing
-    if generator.model_type == "pretrained_clip":
-        # For pretrained CLIP, use ThreadPoolExecutor for I/O bound operations
-        with ThreadPoolExecutor(max_workers=cfg.num_workers) as executor:
-            # Create batches
-            batches = list(batch_generator(image_files, cfg.batch_size))
+    for image_file in tqdm(image_files, desc="Processing images"):
+        try:
+            image_path = os.path.join(cfg.image_path, image_file)
+            embedding = generator.get_image_embedding(image_path)
             
-            # Submit all batches
-            future_to_batch = {executor.submit(generator.process_image_batch, batch): batch for batch in batches}
-            
-            # Process results as they complete
-            for future in tqdm(as_completed(future_to_batch), total=len(batches), desc="Processing image batches"):
-                batch_results = future.result()
-                
-                for image_file, embedding, success in batch_results:
-                    if success and embedding is not None:
-                        # Save embedding as .pt file
-                        output_path = image_embeddings_dir / f"{os.path.splitext(image_file)[0]}.pt"
-                        torch.save(torch.tensor(embedding), output_path)
-                        successful_count += 1
-                    else:
-                        failed_count += 1
-                        print(f"Failed to generate embedding for {image_file}")
-    else:
-        # For custom model, process sequentially due to GPU memory constraints
-        for image_file in tqdm(image_files, desc="Processing images"):
-            try:
-                image_path = os.path.join(cfg.image_path, image_file)
-                embedding = generator.get_image_embedding(image_path)
-                
-                if embedding is not None:
-                    # Save embedding as .pt file
-                    output_path = image_embeddings_dir / f"{os.path.splitext(image_file)[0]}.pt"
-                    torch.save(torch.tensor(embedding), output_path)
-                    successful_count += 1
-                else:
-                    failed_count += 1
-                    print(f"Failed to generate embedding for {image_file}")
-                    
-            except Exception as e:
-                print(f"Error processing {image_file}: {e}")
+            if embedding is not None:
+                # Save embedding as .pt file
+                output_path = image_embeddings_dir / f"{os.path.splitext(image_file)[0]}.pt"
+                torch.save(torch.tensor(embedding), output_path)
+                successful_count += 1
+            else:
                 failed_count += 1
-                continue
+                print(f"Failed to generate embedding for {image_file}")
+                
+        except Exception as e:
+            print(f"Error processing {image_file}: {e}")
+            failed_count += 1
+            continue
     
     print(f"Image embeddings completed: {successful_count} successful, {failed_count} failed")
     print(f"Image embeddings saved to {image_embeddings_dir}")
 
 def generate_caption_embeddings(generator):
-    """Generate embeddings for all captions with parallel processing"""
+    """Generate embeddings for all captions"""
     print(f"Generating caption embeddings using {generator.model_type}...")
     
     # Create output directory for caption embeddings
@@ -374,70 +290,42 @@ def generate_caption_embeddings(generator):
     df = pd.read_csv(cfg.captions_path)
     # The processed captions.csv has columns: image, caption_number, caption, id
     
-    print(f"Generating embeddings for {len(df)} captions using {cfg.num_workers} workers...")
+    print(f"Generating embeddings for {len(df)} captions...")
     
     successful_count = 0
     failed_count = 0
     
-    # Process captions in batches with parallel processing
-    if generator.model_type == "pretrained_clip":
-        # For pretrained CLIP, use ThreadPoolExecutor for I/O bound operations
-        with ThreadPoolExecutor(max_workers=cfg.num_workers) as executor:
-            # Create batches of (index, row) tuples
-            caption_data = [(idx, row) for idx, row in df.iterrows()]
-            batches = list(batch_generator(caption_data, cfg.batch_size))
-            
-            # Submit all batches
-            future_to_batch = {executor.submit(generator.process_caption_batch, batch): batch for batch in batches}
-            
-            # Process results as they complete
-            for future in tqdm(as_completed(future_to_batch), total=len(batches), desc="Processing caption batches"):
-                batch_results = future.result()
-                
-                for idx, image_name, caption_number, embedding, success in batch_results:
-                    if success and embedding is not None:
-                        # Save embedding with naming format: image_name_caption_index.pt
-                        image_name_without_ext = os.path.splitext(image_name)[0]
-                        output_filename = f"{image_name_without_ext}_caption_{caption_number}.pt"
-                        output_path = caption_embeddings_dir / output_filename
-                        torch.save(torch.tensor(embedding), output_path)
-                        successful_count += 1
-                    else:
-                        failed_count += 1
-                        print(f"Failed to generate embedding for caption {idx}: {image_name} {caption_number}")
-    else:
-        # For custom model, process sequentially due to GPU memory constraints
-        for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing captions"):
-            try:
-                image_name = row['image']
-                caption_number = row['caption_number']
-                caption = row['caption']
+    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing captions"):
+        try:
+            image_name = row['image']
+            caption_number = row['caption_number']
+            caption = row['caption']
 
-                if pd.isna(caption):
-                    print(f"Skipping caption {idx} {image_name} {caption_number} {caption} due to NaN value.")
-                    failed_count += 1
-                    continue
-                    
-                caption = str(caption)
-                
-                # Generate text embedding
-                embedding = generator.get_text_embedding(caption)
-                
-                if embedding is not None:
-                    # Save embedding with naming format: image_name_caption_index.pt
-                    image_name_without_ext = os.path.splitext(image_name)[0]
-                    output_filename = f"{image_name_without_ext}_caption_{caption_number}.pt"
-                    output_path = caption_embeddings_dir / output_filename
-                    torch.save(torch.tensor(embedding), output_path)
-                    successful_count += 1
-                else:
-                    failed_count += 1
-                    print(f"Failed to generate embedding for caption {idx}: {image_name} {caption_number}")
-                    
-            except Exception as e:
-                print(f"Error processing caption {idx} {image_name} {caption_number} {caption}: {e}")
+            if pd.isna(caption):
+                print(f"Skipping caption {idx} {image_name} {caption_number} {caption} due to NaN value.")
                 failed_count += 1
                 continue
+                
+            caption = str(caption)
+            
+            # Generate text embedding
+            embedding = generator.get_text_embedding(caption)
+            
+            if embedding is not None:
+                # Save embedding with naming format: image_name_caption_index.pt
+                image_name_without_ext = os.path.splitext(image_name)[0]
+                output_filename = f"{image_name_without_ext}_caption_{caption_number}.pt"
+                output_path = caption_embeddings_dir / output_filename
+                torch.save(torch.tensor(embedding), output_path)
+                successful_count += 1
+            else:
+                failed_count += 1
+                print(f"Failed to generate embedding for caption {idx}: {image_name} {caption_number}")
+                
+        except Exception as e:
+            print(f"Error processing caption {idx} {image_name} {caption_number} {caption}: {e}")
+            failed_count += 1
+            continue
     
     print(f"Caption embeddings completed: {successful_count} successful, {failed_count} failed")
     print(f"Caption embeddings saved to {caption_embeddings_dir}")
@@ -449,8 +337,6 @@ def main(model_type="pretrained_clip"):
     """
     print(f"Starting embedding generation using {model_type}...")
     print(f"Using device: {cfg.device}")
-    print(f"Using {cfg.num_workers} workers for parallel processing")
-    print(f"Batch size: {cfg.batch_size}")
     
     # Initialize the embedding generator
     generator = EmbeddingGenerator(model_type)
@@ -480,15 +366,6 @@ if __name__ == "__main__":
     parser.add_argument('--model_type', type=str, default='pretrained_clip', 
                        choices=['pretrained_clip', 'custom_model'],
                        help='Type of model to use: pretrained_clip (default) or custom_model')
-    parser.add_argument('--num_workers', type=int, default=cfg.num_workers,
-                       help=f'Number of workers for parallel processing (default: {cfg.num_workers})')
-    parser.add_argument('--batch_size', type=int, default=cfg.batch_size,
-                       help=f'Batch size for processing (default: {cfg.batch_size})')
     
     args = parser.parse_args()
-    
-    # Update configuration with command line arguments
-    cfg.num_workers = args.num_workers
-    cfg.batch_size = args.batch_size
-    
     main(args.model_type) 

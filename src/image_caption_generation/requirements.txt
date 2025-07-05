@@ -1,0 +1,7 @@
+spacy
+timm
+transformers
+albumentations
+matplotlib
+tqdm
+opencv-python
