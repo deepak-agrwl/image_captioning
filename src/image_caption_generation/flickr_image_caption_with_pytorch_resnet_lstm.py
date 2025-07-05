@@ -34,8 +34,27 @@ import json
 import time
 
 # Global variables
-IMAGE_DATA_LOCATION = "../../resources/input/flickr8k/Images"
-CAPTION_DATA_LOCATION = "../../resources/input/flickr8k/captions.txt"
+# Dataset configurations
+DATASET_CONFIGS = {
+    'flickr8k': {
+        'image_dir': "../../resources/input/flickr8k/Images",
+        'captions_file': "../../resources/input/flickr8k/captions.txt",
+        'image_col': 'image',
+        'caption_col': 'caption',
+        'file_format': 'txt'
+    },
+    'flickr30k': {
+        'image_dir': "../../resources/input/flickr30k/flickr30k_images/flickr30k_images",
+        'captions_file': "../../resources/input/flickr30k/flickr30k_images/captions.csv",
+        'image_col': 'image',
+        'caption_col': 'caption',
+        'file_format': 'csv'
+    }
+}
+
+# Default dataset (can be overridden via command line)
+DEFAULT_DATASET = 'flickr30k'
+
 PRETRAINED_RESNET_MODEL_PATH = '../../resources/models/resnet50-19c8e357.pth'
 MODEL_SAVE_DIR = "./saved_models"
 
@@ -84,12 +103,23 @@ class Vocabulary:
 
 
 class CustomDataset(Dataset):
-    """Custom dataset for Flickr8k images and captions."""
+    """Custom dataset for Flickr8k and Flickr30k images and captions."""
     
-    def __init__(self, root_dir, captions_file, transform=None, freq_threshold=5):
+    def __init__(self, root_dir, captions_file, transform=None, freq_threshold=5, dataset_type='flickr8k'):
         self.root_dir = root_dir
-        self.df = pd.read_csv(captions_file)
         self.transform = transform
+        self.dataset_type = dataset_type
+        
+        # Load captions based on dataset type
+        if dataset_type == 'flickr8k':
+            # Flickr8k uses txt format with image,caption columns
+            self.df = pd.read_csv(captions_file, sep=',')
+        elif dataset_type == 'flickr30k':
+            # Flickr30k uses csv format with image,caption_number,caption,id columns
+            self.df = pd.read_csv(captions_file)
+        else:
+            raise ValueError(f"Unsupported dataset type: {dataset_type}")
+        
         self.imgs = self.df["image"]
         self.captions = self.df["caption"]
         
@@ -233,17 +263,24 @@ def show_image(inp, title=None):
     plt.pause(0.001)
 
 
-def create_data_loader(batch_size=4, num_workers=0):
-    """Create data loader with transforms."""
+def create_data_loader(batch_size=4, num_workers=0, dataset_type='flickr8k'):
+    """Create data loader with transforms for specified dataset."""
     transforms = T.Compose([
         T.Resize((224, 224)),
         T.ToTensor()
     ])
     
+    # Get dataset configuration
+    if dataset_type not in DATASET_CONFIGS:
+        raise ValueError(f"Unsupported dataset type: {dataset_type}. Available: {list(DATASET_CONFIGS.keys())}")
+    
+    config = DATASET_CONFIGS[dataset_type]
+    
     dataset = CustomDataset(
-        root_dir=IMAGE_DATA_LOCATION,
-        captions_file=CAPTION_DATA_LOCATION,
-        transform=transforms
+        root_dir=config['image_dir'],
+        captions_file=config['captions_file'],
+        transform=transforms,
+        dataset_type=dataset_type
     )
     
     pad_idx = dataset.vocab.stoi["<PAD>"]
@@ -274,14 +311,15 @@ def eval_intermediate_model_dur_train(epoch, model, data_loader, dataset, device
 
     model.train()
 
-def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rate=0.0001, print_every=2000):
+def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rate=0.0001, print_every=2000, dataset_type='flickr8k'):
     """Train the model with model saving and loss tracking."""
     criterion = nn.CrossEntropyLoss(ignore_index=dataset.vocab.stoi["<PAD>"])
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     vocab_size = len(dataset.vocab)
     
-    # Create model save directory
-    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+    # Create model save directory with dataset type
+    model_save_dir = os.path.join(MODEL_SAVE_DIR, dataset_type)
+    os.makedirs(model_save_dir, exist_ok=True)
     
     # Initialize loss tracking
     training_losses = []
@@ -292,17 +330,19 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         'validation_losses': [],
         'model_files': [],
         'timestamps': [],
+        'dataset_type': dataset_type,
         'hyperparameters': {
             'embed_size': model.encoder.embed.out_features,
             'hidden_size': model.decoder.lstm.hidden_size,
             'vocab_size': vocab_size,
             'num_layers': model.decoder.lstm.num_layers,
             'learning_rate': learning_rate,
-            'batch_size': data_loader.batch_size
+            'batch_size': data_loader.batch_size,
+            'dataset_type': dataset_type
         }
     }
     
-    print(f"Starting training for {num_epochs} epochs...")
+    print(f"Starting training for {num_epochs} epochs on {dataset_type} dataset...")
     total_batches = len(data_loader)
     
     for epoch in range(1, num_epochs + 1):
@@ -354,7 +394,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         # Save model after each epoch
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         model_filename = f"model_epoch_{epoch:02d}_loss_{avg_epoch_loss:.4f}_{timestamp}.pt"
-        model_path = os.path.join(MODEL_SAVE_DIR, model_filename)
+        model_path = os.path.join(model_save_dir, model_filename)
         
         # Save model state
         torch.save({
@@ -375,7 +415,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         model_info['timestamps'].append(timestamp)
         
         # Save training info to JSON
-        with open(os.path.join(MODEL_SAVE_DIR, 'training_info.json'), 'w') as f:
+        with open(os.path.join(model_save_dir, 'training_info.json'), 'w') as f:
             json.dump(model_info, f, indent=2)
         
         # Evaluate intermediate model
@@ -388,7 +428,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         print(f"  Model saved: {model_filename}")
     
     # Create and save loss plots
-    create_loss_plots(model_info, MODEL_SAVE_DIR)
+    create_loss_plots(model_info, model_save_dir)
     
     print("Training completed!")
     return model_info
@@ -423,6 +463,7 @@ def create_loss_plots(model_info, save_dir):
     epochs = model_info['epochs']
     train_losses = model_info['training_losses']
     val_losses = model_info['validation_losses']
+    dataset_type = model_info.get('dataset_type', 'unknown')
     
     plt.figure(figsize=(12, 8))
     
@@ -432,7 +473,7 @@ def create_loss_plots(model_info, save_dir):
     plt.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2)
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training and Validation Loss')
+    plt.title(f'Training and Validation Loss - {dataset_type.upper()}')
     plt.legend()
     plt.grid(True, alpha=0.3)
     
@@ -441,7 +482,7 @@ def create_loss_plots(model_info, save_dir):
     plt.plot(epochs, train_losses, 'b-', linewidth=2)
     plt.xlabel('Epoch')
     plt.ylabel('Training Loss')
-    plt.title('Training Loss Over Time')
+    plt.title(f'Training Loss Over Time - {dataset_type.upper()}')
     plt.grid(True, alpha=0.3)
     
     # Validation loss only
@@ -449,7 +490,7 @@ def create_loss_plots(model_info, save_dir):
     plt.plot(epochs, val_losses, 'r-', linewidth=2)
     plt.xlabel('Epoch')
     plt.ylabel('Validation Loss')
-    plt.title('Validation Loss Over Time')
+    plt.title(f'Validation Loss Over Time - {dataset_type.upper()}')
     plt.grid(True, alpha=0.3)
     
     # Loss difference
@@ -458,7 +499,7 @@ def create_loss_plots(model_info, save_dir):
     plt.plot(epochs, loss_diff, 'g-', linewidth=2)
     plt.xlabel('Epoch')
     plt.ylabel('|Training Loss - Validation Loss|')
-    plt.title('Loss Difference (Overfitting Indicator)')
+    plt.title(f'Loss Difference (Overfitting Indicator) - {dataset_type.upper()}')
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -487,7 +528,7 @@ def load_trained_model(model_path, device):
     return model, checkpoint['vocab'], checkpoint
 
 
-def test_model(model, dataset, device, num_samples=5):
+def test_model(model, dataset, device, num_samples=5, dataset_type='flickr8k'):
     """Test the trained model on randomly sampled images."""
     model.eval()
     
@@ -497,13 +538,17 @@ def test_model(model, dataset, device, num_samples=5):
         T.ToTensor()
     ])
     
+    # Get dataset configuration
+    config = DATASET_CONFIGS[dataset_type]
+    
     test_dataset = CustomDataset(
-        root_dir=IMAGE_DATA_LOCATION,
-        captions_file=CAPTION_DATA_LOCATION,
-        transform=transforms
+        root_dir=config['image_dir'],
+        captions_file=config['captions_file'],
+        transform=transforms,
+        dataset_type=dataset_type
     )
     
-    print(f"\nTesting model on {num_samples} randomly sampled images:")
+    print(f"\nTesting model on {num_samples} randomly sampled images from {dataset_type}:")
     print("-" * 50)
     
     # Generate random indices for testing
@@ -546,8 +591,12 @@ def main():
                        help='Path to saved model for testing')
     parser.add_argument('--epochs', type=int, default=10,
                        help='Number of training epochs')
+    parser.add_argument('--dataset', choices=['flickr8k', 'flickr30k'], default=DEFAULT_DATASET,
+                       help='Dataset to use for training/testing')
     
     args = parser.parse_args()
+    
+    print(f"Using dataset: {args.dataset}")
     
     if args.mode == 'test' and args.model_path:
         # Load and test existing model
@@ -558,17 +607,17 @@ def main():
         print(f"Validation Loss: {checkpoint['validation_loss']:.5f}")
         
         # Create dataset with loaded vocabulary
-        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4)
+        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4, dataset_type=args.dataset)
         dataset.vocab = vocab  # Use loaded vocabulary
         
         # Test the loaded model
-        test_model(model, dataset, device, num_samples=5)
+        test_model(model, dataset, device, num_samples=5, dataset_type=args.dataset)
         
     else:
         # Train new model
         # Create data loader
         print("Creating data loader...")
-        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4)
+        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4, dataset_type=args.dataset)
         print(f"Dataset size: {len(dataset)}")
         print(f"Vocabulary size: {len(dataset.vocab)}")
         
@@ -588,11 +637,11 @@ def main():
         # Scale learning rate with batch size (linear scaling rule)
         base_lr = 0.0001
         scaled_lr = base_lr * (32 / 16)  # Scale from batch_size=16 to batch_size=32
-        training_info = train_model(model, data_loader, dataset, device, num_epochs=args.epochs, print_every=1000, learning_rate=scaled_lr)
+        training_info = train_model(model, data_loader, dataset, device, num_epochs=args.epochs, print_every=1000, learning_rate=scaled_lr, dataset_type=args.dataset)
         
         # Test model
         print("\nTesting model...")
-        test_model(model, dataset, device, num_samples=3)
+        test_model(model, dataset, device, num_samples=3, dataset_type=args.dataset)
     
     print("\nPipeline completed!")
 

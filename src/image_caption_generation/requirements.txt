@@ -1,7 +1,27 @@
+# Core dependencies for image captioning project
 spacy
 timm
 transformers
 albumentations
 matplotlib
-tqdm
+tqdm>=4.60.0
 opencv-python
+
+# PyTorch ecosystem (required for deep learning)
+torch
+torchvision
+torchaudio
+
+# Data processing and analysis
+pandas
+numpy
+
+# Image processing
+Pillow
+
+# Download script dependencies
+requests>=2.25.0
+
+# Optional: Jupyter support for notebook version
+jupyter
+ipykernel
