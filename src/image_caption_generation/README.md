@@ -187,6 +187,13 @@ Typical training metrics:
 - **Training Time**: ~15-30 minutes per epoch (depending on hardware)
 - **Memory Usage**: ~4-8 GB GPU memory with batch_size=32
 
+## Next Steps
+
+- [Done] Add code to save the loss and accuracy metrics to a file + Add code to generate loss graph
+- Add code to generate accuracy of the model. 
+- Enhance it to work with 30K Image Captions set. Try running it for smaller set of batches for 2 epochs. 
+- Train the model for 30K image set on GPU machine in runpod.io and retrieve the trained model, loss graph. 
+
 ## Customization
 
 ### Adding New Datasets

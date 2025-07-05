@@ -30,11 +30,14 @@ import torchvision.transforms as T
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+import json
+import time
 
 # Global variables
 IMAGE_DATA_LOCATION = "../../resources/input/flickr8k/Images"
 CAPTION_DATA_LOCATION = "../../resources/input/flickr8k/captions.txt"
 PRETRAINED_RESNET_MODEL_PATH = '../../resources/models/resnet50-19c8e357.pth'
+MODEL_SAVE_DIR = "./saved_models"
 
 # Load spaCy model
 try:
@@ -272,10 +275,32 @@ def eval_intermediate_model_dur_train(epoch, model, data_loader, dataset, device
     model.train()
 
 def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rate=0.0001, print_every=2000):
-    """Train the model."""
+    """Train the model with model saving and loss tracking."""
     criterion = nn.CrossEntropyLoss(ignore_index=dataset.vocab.stoi["<PAD>"])
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     vocab_size = len(dataset.vocab)
+    
+    # Create model save directory
+    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+    
+    # Initialize loss tracking
+    training_losses = []
+    validation_losses = []
+    model_info = {
+        'epochs': [],
+        'training_losses': [],
+        'validation_losses': [],
+        'model_files': [],
+        'timestamps': [],
+        'hyperparameters': {
+            'embed_size': model.encoder.embed.out_features,
+            'hidden_size': model.decoder.lstm.hidden_size,
+            'vocab_size': vocab_size,
+            'num_layers': model.decoder.lstm.num_layers,
+            'learning_rate': learning_rate,
+            'batch_size': data_loader.batch_size
+        }
+    }
     
     print(f"Starting training for {num_epochs} epochs...")
     total_batches = len(data_loader)
@@ -317,16 +342,149 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
                 'Loss': f'{loss.item():.5f}',
                 'Avg Loss': f'{epoch_loss/(idx+1):.5f}'
             })
-            
-            # if (idx + 1) % print_every == 0:
-            #     eval_intermediate_model_dur_train(epoch, model, data_loader, dataset, device)
-
-        eval_intermediate_model_dur_train(epoch, model, data_loader, dataset, device)
-        # Print epoch summary
+        
+        # Calculate average epoch loss
         avg_epoch_loss = epoch_loss / total_batches
-        print(f"\nEpoch {epoch} completed - Average Loss: {avg_epoch_loss:.5f}")
+        training_losses.append(avg_epoch_loss)
+        
+        # Calculate validation loss (using a subset of training data for simplicity)
+        val_loss = calculate_validation_loss(model, data_loader, criterion, vocab_size, device)
+        validation_losses.append(val_loss)
+        
+        # Save model after each epoch
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        model_filename = f"model_epoch_{epoch:02d}_loss_{avg_epoch_loss:.4f}_{timestamp}.pt"
+        model_path = os.path.join(MODEL_SAVE_DIR, model_filename)
+        
+        # Save model state
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'training_loss': avg_epoch_loss,
+            'validation_loss': val_loss,
+            'vocab': dataset.vocab,
+            'hyperparameters': model_info['hyperparameters']
+        }, model_path)
+        
+        # Update model info
+        model_info['epochs'].append(epoch)
+        model_info['training_losses'].append(avg_epoch_loss)
+        model_info['validation_losses'].append(val_loss)
+        model_info['model_files'].append(model_filename)
+        model_info['timestamps'].append(timestamp)
+        
+        # Save training info to JSON
+        with open(os.path.join(MODEL_SAVE_DIR, 'training_info.json'), 'w') as f:
+            json.dump(model_info, f, indent=2)
+        
+        # Evaluate intermediate model
+        eval_intermediate_model_dur_train(epoch, model, data_loader, dataset, device)
+        
+        # Print epoch summary
+        print(f"\nEpoch {epoch} completed:")
+        print(f"  Training Loss: {avg_epoch_loss:.5f}")
+        print(f"  Validation Loss: {val_loss:.5f}")
+        print(f"  Model saved: {model_filename}")
+    
+    # Create and save loss plots
+    create_loss_plots(model_info, MODEL_SAVE_DIR)
     
     print("Training completed!")
+    return model_info
+
+
+def calculate_validation_loss(model, data_loader, criterion, vocab_size, device, val_fraction=0.1):
+    """Calculate validation loss using a subset of the data."""
+    model.eval()
+    total_val_loss = 0.0
+    val_batches = 0
+    
+    # Use a subset of batches for validation
+    num_val_batches = max(1, int(len(data_loader) * val_fraction))
+    
+    with torch.no_grad():
+        for i, (image, captions) in enumerate(data_loader):
+            if i >= num_val_batches:
+                break
+                
+            image, captions = image.to(device), captions.to(device)
+            outputs = model(image, captions)
+            loss = criterion(outputs.view(-1, vocab_size), captions.view(-1))
+            total_val_loss += loss.item()
+            val_batches += 1
+    
+    model.train()
+    return total_val_loss / val_batches if val_batches > 0 else float('inf')
+
+
+def create_loss_plots(model_info, save_dir):
+    """Create and save training/validation loss plots."""
+    epochs = model_info['epochs']
+    train_losses = model_info['training_losses']
+    val_losses = model_info['validation_losses']
+    
+    plt.figure(figsize=(12, 8))
+    
+    # Training and validation loss plot
+    plt.subplot(2, 2, 1)
+    plt.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2)
+    plt.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2)
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Training loss only
+    plt.subplot(2, 2, 2)
+    plt.plot(epochs, train_losses, 'b-', linewidth=2)
+    plt.xlabel('Epoch')
+    plt.ylabel('Training Loss')
+    plt.title('Training Loss Over Time')
+    plt.grid(True, alpha=0.3)
+    
+    # Validation loss only
+    plt.subplot(2, 2, 3)
+    plt.plot(epochs, val_losses, 'r-', linewidth=2)
+    plt.xlabel('Epoch')
+    plt.ylabel('Validation Loss')
+    plt.title('Validation Loss Over Time')
+    plt.grid(True, alpha=0.3)
+    
+    # Loss difference
+    plt.subplot(2, 2, 4)
+    loss_diff = [abs(t - v) for t, v in zip(train_losses, val_losses)]
+    plt.plot(epochs, loss_diff, 'g-', linewidth=2)
+    plt.xlabel('Epoch')
+    plt.ylabel('|Training Loss - Validation Loss|')
+    plt.title('Loss Difference (Overfitting Indicator)')
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'training_losses.png'), dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    print(f"Loss plots saved to {os.path.join(save_dir, 'training_losses.png')}")
+
+
+def load_trained_model(model_path, device):
+    """Load a trained model from saved checkpoint."""
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    # Recreate model with same hyperparameters
+    hyperparams = checkpoint['hyperparameters']
+    model = EncoderDecoder(
+        embed_size=hyperparams['embed_size'],
+        hidden_size=hyperparams['hidden_size'],
+        vocab_size=hyperparams['vocab_size'],
+        num_layers=hyperparams['num_layers']
+    ).to(device)
+    
+    # Load model state
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    return model, checkpoint['vocab'], checkpoint
 
 
 def test_model(model, dataset, device, num_samples=5):
@@ -379,33 +537,62 @@ def main():
         device = torch.device("mps")
     print(f"Using device: {device}")
     
-    # Create data loader
-    print("Creating data loader...")
-    data_loader, dataset = create_data_loader(batch_size=32, num_workers=4)
-    print(f"Dataset size: {len(dataset)}")
-    print(f"Vocabulary size: {len(dataset.vocab)}")
+    # Check if user wants to load existing model or train new one
+    import argparse
+    parser = argparse.ArgumentParser(description='Image Captioning Training/Testing')
+    parser.add_argument('--mode', choices=['train', 'test'], default='train', 
+                       help='Mode: train new model or test existing model')
+    parser.add_argument('--model_path', type=str, default=None,
+                       help='Path to saved model for testing')
+    parser.add_argument('--epochs', type=int, default=10,
+                       help='Number of training epochs')
     
-    # Model hyperparameters
-    embed_size = 400
-    hidden_size = 512
-    vocab_size = len(dataset.vocab)
-    num_layers = 2
+    args = parser.parse_args()
     
-    # Initialize model
-    print("Initializing model...")
-    model = EncoderDecoder(embed_size, hidden_size, vocab_size, num_layers).to(device)
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-    
-    # Train model
-    print("\nStarting training...")
-    # Scale learning rate with batch size (linear scaling rule)
-    base_lr = 0.0001
-    scaled_lr = base_lr * (32 / 16)  # Scale from batch_size=16 to batch_size=32
-    train_model(model, data_loader, dataset, device, num_epochs=12, print_every=1000, learning_rate=scaled_lr)
-    
-    # Test model
-    print("\nTesting model...")
-    test_model(model, dataset, device, num_samples=3)
+    if args.mode == 'test' and args.model_path:
+        # Load and test existing model
+        print(f"Loading model from: {args.model_path}")
+        model, vocab, checkpoint = load_trained_model(args.model_path, device)
+        print(f"Loaded model from epoch {checkpoint['epoch']}")
+        print(f"Training Loss: {checkpoint['training_loss']:.5f}")
+        print(f"Validation Loss: {checkpoint['validation_loss']:.5f}")
+        
+        # Create dataset with loaded vocabulary
+        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4)
+        dataset.vocab = vocab  # Use loaded vocabulary
+        
+        # Test the loaded model
+        test_model(model, dataset, device, num_samples=5)
+        
+    else:
+        # Train new model
+        # Create data loader
+        print("Creating data loader...")
+        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4)
+        print(f"Dataset size: {len(dataset)}")
+        print(f"Vocabulary size: {len(dataset.vocab)}")
+        
+        # Model hyperparameters
+        embed_size = 400
+        hidden_size = 512
+        vocab_size = len(dataset.vocab)
+        num_layers = 2
+        
+        # Initialize model
+        print("Initializing model...")
+        model = EncoderDecoder(embed_size, hidden_size, vocab_size, num_layers).to(device)
+        print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+        
+        # Train model
+        print("\nStarting training...")
+        # Scale learning rate with batch size (linear scaling rule)
+        base_lr = 0.0001
+        scaled_lr = base_lr * (32 / 16)  # Scale from batch_size=16 to batch_size=32
+        training_info = train_model(model, data_loader, dataset, device, num_epochs=args.epochs, print_every=1000, learning_rate=scaled_lr)
+        
+        # Test model
+        print("\nTesting model...")
+        test_model(model, dataset, device, num_samples=3)
     
     print("\nPipeline completed!")
 
