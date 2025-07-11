@@ -14,6 +14,11 @@ import zipfile
 import requests
 from tqdm import tqdm
 import argparse
+try:
+    import gdown
+    HAS_GDOWN = True
+except ImportError:
+    HAS_GDOWN = False
 
 # Dataset configurations
 DATASET_LINKS = {
@@ -31,11 +36,18 @@ DATASET_LINKS = {
     }
 }
 
-def download_file(url, filename, expected_size_mb):
-    """Download a file with progress bar."""
+def download_file(url, filename, expected_size_mb, file_id=None):
+    """Download a file with progress bar. Uses gdown for Google Drive links if available."""
     print(f"Downloading {filename}...")
     print(f"Expected size: {expected_size_mb} MB")
     
+    # Use gdown for Google Drive links if available
+    if file_id and HAS_GDOWN:
+        gdown.download(id=file_id, output=filename, quiet=False)
+        return
+    elif file_id and not HAS_GDOWN:
+        print("gdown is not installed. Please install it with 'pip install gdown' for robust Google Drive downloads.")
+        print("Falling back to requests, but download may fail for large files.")
     try:
         response = requests.get(url, stream=True)
         response.raise_for_status()
@@ -116,37 +128,40 @@ def verify_dataset_structure(dataset_type):
 def download_and_extract_dataset(dataset_type, force_download=False):
     """Download and extract a specific dataset."""
     if dataset_type not in DATASET_LINKS:
-        print(f"✗ Unknown dataset type: {dataset_type}")
+        print(f"Unknown dataset type: {dataset_type}")
         return False
-    
-    config = DATASET_LINKS[dataset_type]
-    zip_path = f"resources/input/{config['filename']}"
-    
-    print(f"\n{'='*60}")
+    info = DATASET_LINKS[dataset_type]
+    url = info['url']
+    filename = os.path.join('resources', 'input', info['filename'])
+    expected_size_mb = info['size_mb']
+    description = info['description']
+    file_id = None
+    # Extract file id from url for gdown
+    if 'id=' in url:
+        file_id = url.split('id=')[-1]
+
+    print("="*60)
     print(f"Processing {dataset_type.upper()} dataset")
-    print(f"Description: {config['description']}")
-    print(f"{'='*60}")
-    
-    # Create resources directory
-    os.makedirs("resources/input", exist_ok=True)
-    
-    # Check if zip file already exists
-    if os.path.exists(zip_path) and not force_download:
-        print(f"✓ {config['filename']} already exists. Skipping download.")
+    print(f"Description: {description}")
+    print("="*60)
+
+    # Download
+    if not os.path.exists(filename) or force_download:
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        download_file(url, filename, expected_size_mb, file_id=file_id)
     else:
-        # Download the file
-        if not download_file(config['url'], zip_path, config['size_mb']):
-            return False
-    
-    # Check if already extracted
-    if dataset_type == 'flickr8k':
-        extract_dir = "resources/input/flickr8k"
-    else:  # flickr30k
-        extract_dir = "resources/input/flickr30k"
-    
-    if os.path.exists(extract_dir) and not force_download:
-        print(f"✓ {dataset_type} already extracted. Skipping extraction.")
-    else:
+        print(f"✓ {filename} already exists, skipping download.")
+
+    # Extract
+    print(f"Extracting {filename}...")
+    try:
+        extract_zip(filename, os.path.dirname(filename))
+        print(f"✓ Successfully extracted {filename}")
+    except Exception as e:
+        print(f"✗ Error extracting {filename}: {e}")
+        return False
+
+    # Verify
         # Extract the file
         if not extract_zip(zip_path, "resources/input"):
             return False
