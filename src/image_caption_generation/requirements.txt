@@ -1,4 +1,5 @@
 # Core dependencies for image captioning project
+# No extra dependencies needed for LSTM+Attention support
 spacy
 timm
 transformers
@@ -25,3 +26,8 @@ requests>=2.25.0
 # Optional: Jupyter support for notebook version
 jupyter
 ipykernel
+
+# NLP metrics
+nltk
+jiwer
+rouge-score

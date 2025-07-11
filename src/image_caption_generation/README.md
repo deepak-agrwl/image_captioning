@@ -143,25 +143,59 @@ chmod +x setup.sh
 
 ## Usage
 
-### Training on Flickr8k 
+### Training & Evaluation
+
+Train a model using the provided script:
+
 ```bash
-python flickr_image_caption_with_pytorch_resnet_lstm.py --mode train --dataset flickr8k --epochs 10
+python flickr_image_caption_with_pytorch_resnet_lstm.py --mode train --dataset flickr8k --decoder attention --epochs 10
 ```
 
-### Training on Flickr30k (Default)
+- Model checkpoints are saved after each epoch in `saved_models/<dataset>/`.
+- The best model (lowest validation loss so far) is always tracked and saved as `best_model.pth`.
+- Loss curves (as PNG) and metrics history (as JSON) are saved after each epoch for easy experiment tracking.
+- All training, validation, and metric history is tracked and saved automatically.
+
+### Resume Training from Checkpoint
+
+To resume training for N more epochs from a checkpoint:
+
 ```bash
-python flickr_image_caption_with_pytorch_resnet_lstm.py --mode train --epochs 10
+python flickr_image_caption_with_pytorch_resnet_lstm.py --mode train --model_path saved_models/flickr8k/model_epoch5.pth --epochs 5 --dataset flickr8k --decoder attention
 ```
 
-### Testing a trained model
+- This will load the checkpoint and continue training for 5 more epochs (not up to a total).
+- All optimizer/scheduler state is restored for seamless continuation.
+
+## Code Structure & Modularity
+
+- `flickr_image_caption_with_pytorch_resnet_lstm.py`: Main training/testing script (now modular, delegates all saving/checkpoint/metrics to utility modules)
+- `training_utils.py`: Handles saving model checkpoints, best model, metrics, and loss curves
+- `metrics_utils.py`, `experiment_utils.py`, `attention_visualization.py`: Metrics, experiment management, and visualization utilities
+
+## Automated Experiment Tracking
+
+- Model checkpoints, best model, loss curves, and metrics are all saved after each epoch
+- No manual checkpoint code is needed in the main script—everything is modular and handled by utility modules
+- All progress is tracked and can be resumed or analyzed at any time
+
+## Example Resume Training
+
+To continue training from a previous run:
+
 ```bash
-python flickr_image_caption_with_pytorch_resnet_lstm.py --mode test --model_path path/to/model.pt --dataset flickr8k
+python flickr_image_caption_with_pytorch_resnet_lstm.py --mode train --model_path saved_models/flickr8k/model_epoch10.pth --epochs 5 --dataset flickr8k --decoder attention
 ```
+
+This will load the model, optimizer, and scheduler state from the checkpoint and continue for 5 more epochs, saving all progress as before.
 
 ## Command Line Arguments
 
 - `--mode`: Choose between 'train' or 'test' (default: 'train')
 - `--dataset`: Choose between 'flickr8k' or 'flickr30k' (default: 'flickr8k')
+- `--decoder`: Choose between 'lstm' (default) or 'attention' (LSTM+Attention)
+- `--model_path`: Path to saved model for testing
+- `--epochs`: Number of training epochs (default: 10)
 - `--model_path`: Path to saved model for testing
 - `--epochs`: Number of training epochs (default: 10)
 
@@ -186,8 +220,9 @@ learning_rate = 0.0002    # Learning rate (scaled for batch size)
 - Projects to 400-dimensional embedding space
 - Parameters are frozen during training
 
-### Decoder (LSTM)
-- Takes image features and generates captions word by word
+### Decoder (LSTM & LSTM+Attention)
+- **LSTM**: Takes image features and generates captions word by word (default)
+- **LSTM+Attention**: Optionally, use an attention mechanism on top of LSTM for potentially improved captioning performance. Select with `--decoder attention`.
 - Outputs probability distribution over vocabulary
 
 ### Vocabulary
