@@ -417,8 +417,29 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
     n_val = int(val_fraction * n_total)
     n_train = n_total - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(42))
-    train_loader = DataLoader(train_set, batch_size=data_loader.batch_size, shuffle=True, num_workers=0, collate_fn=data_loader.collate_fn)
-    val_loader = DataLoader(val_set, batch_size=data_loader.batch_size, shuffle=False, num_workers=0, collate_fn=data_loader.collate_fn)
+    
+    # Optimize data loading for GPU training
+    #num_workers = min(8, os.cpu_count())  # Use more workers for faster data loading
+    pin_memory = (device.type == 'cuda' or device.type == 'mps')  # Pin memory for faster GPU transfer
+    
+    train_loader = DataLoader(
+        train_set, 
+        batch_size=data_loader.batch_size, 
+        shuffle=True, 
+        num_workers=data_loader.num_workers, 
+        collate_fn=data_loader.collate_fn,
+        pin_memory=pin_memory,
+        persistent_workers=True if data_loader.num_workers > 0 else False
+    )
+    val_loader = DataLoader(
+        val_set, 
+        batch_size=data_loader.batch_size, 
+        shuffle=False, 
+        num_workers=data_loader.num_workers, 
+        collate_fn=data_loader.collate_fn,
+        pin_memory=pin_memory,
+        persistent_workers=True if data_loader.num_workers > 0 else False
+    )
     
     # Initialize or load loss tracking
     import json
@@ -457,8 +478,20 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         model.train()
         epoch_loss = 0.0
         progress_msg = f"Epoch {epoch}/{total_epochs}"
+        
+        # GPU memory monitoring
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+            gpu_memory_before = torch.cuda.memory_allocated() / 1024**3
+            print(f"GPU Memory before epoch {epoch}: {gpu_memory_before:.2f} GB")
+        
+        epoch_start_time = time.time()
+        batch_times = []
+        
         for i, (images, captions) in enumerate(tqdm(train_loader, desc=progress_msg)):
-            images, captions = images.to(device), captions.to(device)
+            batch_start_time = time.time()
+            
+            images, captions = images.to(device, non_blocking=True), captions.to(device, non_blocking=True)
             optimizer.zero_grad()
             outputs = model(images, captions)
             # For LSTM decoder, outputs has one extra time step due to prepended image feature
@@ -468,9 +501,23 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
-
+            
+            batch_time = time.time() - batch_start_time
+            batch_times.append(batch_time)
+          
         avg_epoch_loss = epoch_loss / len(train_loader)
+        epoch_time = time.time() - epoch_start_time
+        avg_batch_time = sum(batch_times) / len(batch_times)
+        
         tqdm.write(f"Epoch {epoch} finished. Final batch loss: {loss.item():.4f}")
+        tqdm.write(f"Epoch time: {epoch_time:.2f}s, Avg batch time: {avg_batch_time:.3f}s")
+        
+        # GPU memory after epoch
+        if device.type == 'cuda':
+            gpu_memory_after = torch.cuda.memory_allocated() / 1024**3
+            print(f"GPU Memory after epoch {epoch}: {gpu_memory_after:.2f} GB")
+            print(f"GPU Memory used: {gpu_memory_after - gpu_memory_before:.2f} GB")
+        
         training_losses.append(avg_epoch_loss)
         epochs_list.append(epoch)
 
@@ -801,32 +848,54 @@ def main(args):
     print("Flickr Image Captioning with PyTorch ResNet-LSTM/LSTM-Attention")
     print("=" * 50)
     
+    # Enhanced device detection and debugging
+    print("=== GPU Debug Information ===")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"CUDA device count: {torch.cuda.device_count()}")
+        print(f"Current CUDA device: {torch.cuda.current_device()}")
+        print(f"CUDA device name: {torch.cuda.get_device_name()}")
+        print(f"CUDA device memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    print(f"MPS available: {torch.backends.mps.is_available()}")
+    print("=============================")
+    
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.backends.mps.is_available():
         device = torch.device("mps")
-    print(f"Using device: {device}")
+    print(f"Selected device: {device}")
+    
+    # Verify model will be on correct device
+    if device.type == 'cuda':
+        print(f"Model will be trained on GPU: {torch.cuda.get_device_name()}")
+    else:
+        print("WARNING: Model will be trained on CPU - this will be very slow!")
     
     print(f"Using dataset: {args.dataset_type if hasattr(args, 'dataset_type') else args.dataset}")
     print(f"Decoder type: {args.decoder}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Number of workers: {args.num_workers}")
+    
     if args.mode == 'test' and args.model_path:
         print(f"Loading model from: {args.model_path}")
         model, vocab, checkpoint = load_trained_model(args.model_path, device)
         print(f"Loaded model from epoch {checkpoint['epoch']}")
         print(f"Training Loss: {checkpoint['training_loss']:.5f}")
         print(f"Validation Loss: {checkpoint['validation_loss']:.5f}")
-        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
+        data_loader, dataset = create_data_loader(batch_size=args.batch_size, num_workers=args.num_workers, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
         dataset.vocab = vocab
         test_model(model, dataset, device, num_samples=5, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
     else:
         print("Creating data loader...")
-        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
+        data_loader, dataset = create_data_loader(batch_size=args.batch_size, num_workers=args.num_workers, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
         print(f"Dataset size: {len(dataset)}")
         print(f"Vocabulary size: {len(dataset.vocab)}")
-        embed_size = 400
-        hidden_size = 512
+        embed_size = args.embed_size
+        hidden_size = args.hidden_size
         vocab_size = len(dataset.vocab)
-        num_layers = 2
+        num_layers = args.num_layers
+        attention_dim = args.attention_dim
+        drop_prob = args.drop_prob
         start_epoch = 1
         optimizer = torch.optim.Adam
         scheduler = None
@@ -845,13 +914,13 @@ def main(args):
                 scheduler = None
             start_epoch = checkpoint['epoch'] + 1
         else:
-            print("Initializing model...")
-            model = EncoderDecoder(embed_size, hidden_size, vocab_size, num_layers, decoder_type=args.decoder).to(device)
+            print(f"Initializing model with embed_size={embed_size}, hidden_size={hidden_size}, vocab_size={vocab_size}, num_layers={num_layers}, decoder_type={args.decoder}, attention_dim={attention_dim}, drop_prob={drop_prob}")
+            model = EncoderDecoder(embed_size, hidden_size, vocab_size, num_layers, decoder_type=args.decoder, attention_dim=attention_dim, drop_prob=drop_prob).to(device)
             optimizer = torch.optim.Adam(model.parameters())
         print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
         print("\nStarting training...")
         base_lr = 0.0001
-        scaled_lr = base_lr * (32 / 16)
+        scaled_lr = base_lr * (args.batch_size / 16)  # Scale learning rate based on batch size
         training_info = train_model(model, data_loader, dataset, device, num_epochs=args.epochs, print_every=1000, learning_rate=scaled_lr, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset, start_epoch=start_epoch, optimizer=optimizer, scheduler=scheduler, decoder_type=args.decoder)
         print("\nTesting model...")
         test_model(model, dataset, device, num_samples=3, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
@@ -870,6 +939,15 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, default=None, help='Path to save/load the model')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
     parser.add_argument('--decoder', type=str, default='lstm', choices=['lstm', 'attention'], help='Decoder type: lstm or attention')
+    parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training (default: 128)')
+    parser.add_argument('--num_workers', type=int, default=16, help='Number of workers for data loading (default: 16)')
+    parser.add_argument('--embed_size', type=int, default=512, help='Embedding size')
+    parser.add_argument('--hidden_size', type=int, default=1024, help='LSTM hidden size')
+    parser.add_argument('--num_layers', type=int, default=3, help='Number of LSTM layers')
+    parser.add_argument('--attention_dim', type=int, default=512,
+                        help='Attention dimension (if using attention decoder)')
+    parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate')
+    parser.add_argument('--drop_prob', type=float, default=0.3, help='Dropout probability')
     args = parser.parse_args()
 
     # Set paths for backward compatibility
