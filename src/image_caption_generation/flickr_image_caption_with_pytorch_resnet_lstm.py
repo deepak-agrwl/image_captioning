@@ -308,14 +308,19 @@ class DecoderRNNWithAttention(nn.Module):
         c = torch.tanh(mean_encoder.new_zeros((encoder_out.size(0), self.hidden_size)))
         return h, c
 
-    def generate_caption(self, features, max_len=20, vocab=None):
+    def generate_caption(self, features, max_len=20, vocab=None, return_attention=False):
         batch_size = features.size(0)
         encoder_out = features.unsqueeze(1)  # (batch, 1, encoder_dim)
         h, c = self.init_hidden_state(features)
         inputs = self.embedding(torch.full((batch_size,), 1, dtype=torch.long, device=features.device))  # <SOS>
         captions = []
+        attention_weights = []
+        
         for _ in range(max_len):
             context, alpha = self.attention(encoder_out, h)
+            if return_attention:
+                attention_weights.append(alpha.squeeze(0).cpu().numpy())  # Remove batch dimension
+            
             lstm_input = torch.cat([inputs, context], dim=1)
             h, c = self.lstm(lstm_input, (h, c))
             out = self.fcn(self.drop(h))
@@ -324,7 +329,11 @@ class DecoderRNNWithAttention(nn.Module):
             if vocab.itos[predicted.item()] == "<EOS>":
                 break
             inputs = self.embedding(predicted)
-        return [vocab.itos[idx] for idx in captions]
+        
+        result = [vocab.itos[idx] for idx in captions]
+        if return_attention:
+            return result, attention_weights
+        return result
 
 
 class EncoderDecoder(nn.Module):
@@ -350,6 +359,342 @@ def show_image(inp, title=None):
     if title is not None:
         plt.title(title)
     plt.pause(0.001)
+
+
+def create_attention_visualization(model, dataset, device, vocab, num_samples=3, save_dir=None, dataset_type='flickr30k'):
+    """Create attention visualizations for the attention-based model."""
+    if not hasattr(model.decoder, 'attention'):
+        print("Model does not have attention mechanism. Skipping attention visualization.")
+        return
+    
+    model.eval()
+    print(f"\nCreating attention visualizations for {num_samples} samples...")
+    
+    # Get random samples
+    random.seed(42)
+    dataset_size = len(dataset)
+    random_indices = random.sample(range(dataset_size), min(num_samples, dataset_size))
+    
+    for i, idx in enumerate(random_indices):
+        img, _ = dataset[idx]
+        img_tensor = img.unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            features = model.encoder(img_tensor)
+            caption_tokens, attention_weights = model.decoder.generate_caption(
+                features, vocab=vocab, return_attention=True
+            )
+        
+        # Create visualization
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        
+        # Original image
+        axes[0, 0].imshow(img.permute(1, 2, 0))
+        axes[0, 0].set_title('Original Image')
+        axes[0, 0].axis('off')
+        
+        # Caption
+        caption_text = ' '.join(caption_tokens)
+        axes[0, 1].text(0.1, 0.5, f'Generated Caption:\n{caption_text}', 
+                       transform=axes[0, 1].transAxes, fontsize=12, 
+                       verticalalignment='center', wrap=True)
+        axes[0, 1].set_title('Generated Caption')
+        axes[0, 1].axis('off')
+        
+        # Attention visualizations for first few words
+        for j, (word, attn) in enumerate(zip(caption_tokens[:4], attention_weights[:4])):
+            row = 1
+            col = j
+            if col >= 3:
+                break
+                
+            axes[row, col].imshow(img.permute(1, 2, 0))
+            # Reshape attention to image-like format (assuming square attention)
+            attn_reshaped = attn.reshape(1, 1)  # For single pixel attention
+            axes[row, col].imshow(attn_reshaped, cmap='jet', alpha=0.6, extent=[0, 224, 224, 0])
+            axes[row, col].set_title(f'Attention: "{word}"')
+            axes[row, col].axis('off')
+        
+        # Hide unused subplots
+        for j in range(len(caption_tokens[:4]), 3):
+            axes[1, j].axis('off')
+        
+        plt.tight_layout()
+        
+        if save_dir:
+            save_path = os.path.join(save_dir, f'attention_viz_sample_{i+1}.png')
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Attention visualization saved to: {save_path}")
+        
+        plt.show()
+        plt.close()
+    
+    print("Attention visualization completed!")
+
+
+def visualize_attention_heatmap(image, caption_tokens, attention_weights, save_path=None):
+    """Create a detailed attention heatmap visualization."""
+    if len(caption_tokens) != len(attention_weights):
+        print(f"Warning: Mismatch between caption length ({len(caption_tokens)}) and attention weights ({len(attention_weights)})")
+        return
+    
+    n_words = len(caption_tokens)
+    n_cols = min(5, n_words)
+    n_rows = int(np.ceil(n_words / n_cols))
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 3 * n_rows))
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    
+    for i, (word, attn) in enumerate(zip(caption_tokens, attention_weights)):
+        row = i // n_cols
+        col = i % n_cols
+        
+        # Show original image
+        axes[row, col].imshow(image.permute(1, 2, 0))
+        
+        # Overlay attention heatmap
+        attn_reshaped = attn.reshape(1, 1)  # For single pixel attention
+        axes[row, col].imshow(attn_reshaped, cmap='jet', alpha=0.7, extent=[0, 224, 224, 0])
+        axes[row, col].set_title(f'"{word}"', fontsize=12, fontweight='bold')
+        axes[row, col].axis('off')
+    
+    # Hide unused subplots
+    for j in range(n_words, n_rows * n_cols):
+        row = j // n_cols
+        col = j % n_cols
+        axes[row, col].axis('off')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Attention heatmap saved to: {save_path}")
+    
+    plt.show()
+    plt.close()
+
+
+def create_advanced_attention_visualization(model, dataset, device, vocab, num_samples=3, save_dir=None):
+    """Create advanced attention visualizations with attention weights over image features."""
+    if not hasattr(model.decoder, 'attention'):
+        print("Model does not have attention mechanism. Skipping advanced attention visualization.")
+        return
+    
+    model.eval()
+    print(f"\nCreating advanced attention visualizations for {num_samples} samples...")
+    
+    # Get random samples
+    random.seed(42)
+    dataset_size = len(dataset)
+    random_indices = random.sample(range(dataset_size), min(num_samples, dataset_size))
+    
+    for i, idx in enumerate(random_indices):
+        img, _ = dataset[idx]
+        img_tensor = img.unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            features = model.encoder(img_tensor)
+            caption_tokens, attention_weights = model.decoder.generate_caption(
+                features, vocab=vocab, return_attention=True
+            )
+        
+        # Create advanced visualization
+        fig, axes = plt.subplots(2, 4, figsize=(20, 10))
+        
+        # Original image
+        axes[0, 0].imshow(img.permute(1, 2, 0))
+        axes[0, 0].set_title('Original Image', fontsize=14, fontweight='bold')
+        axes[0, 0].axis('off')
+        
+        # Generated caption
+        caption_text = ' '.join(caption_tokens)
+        axes[0, 1].text(0.1, 0.5, f'Generated Caption:\n{caption_text}', 
+                       transform=axes[0, 1].transAxes, fontsize=12, 
+                       verticalalignment='center', wrap=True)
+        axes[0, 1].set_title('Generated Caption', fontsize=14, fontweight='bold')
+        axes[0, 1].axis('off')
+        
+        # Attention weights for each word
+        for j, (word, attn) in enumerate(zip(caption_tokens[:6], attention_weights[:6])):
+            row = 1 if j >= 3 else 0
+            col = j + 2 if j < 3 else j - 1
+            
+            if col >= 4:
+                break
+                
+            axes[row, col].imshow(img.permute(1, 2, 0))
+            # Create a more sophisticated attention overlay
+            attn_reshaped = attn.reshape(1, 1)  # For single pixel attention
+            axes[row, col].imshow(attn_reshaped, cmap='hot', alpha=0.8, extent=[0, 224, 224, 0])
+            axes[row, col].set_title(f'Attention: "{word}"', fontsize=12, fontweight='bold')
+            axes[row, col].axis('off')
+        
+        # Hide unused subplots
+        for j in range(6, 8):
+            row = 1
+            col = j - 1
+            if col < 4:
+                axes[row, col].axis('off')
+        
+        plt.tight_layout()
+        
+        if save_dir:
+            save_path = os.path.join(save_dir, f'advanced_attention_viz_sample_{i+1}.png')
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Advanced attention visualization saved to: {save_path}")
+        
+        plt.show()
+        plt.close()
+    
+    print("Advanced attention visualization completed!")
+
+
+def create_scheduler(optimizer, scheduler_type, **kwargs):
+    """
+    Create a learning rate scheduler based on the specified type.
+    
+    Args:
+        optimizer: PyTorch optimizer
+        scheduler_type: Type of scheduler to create
+        **kwargs: Additional arguments for specific schedulers
+    
+    Returns:
+        PyTorch scheduler or None
+    """
+    if scheduler_type == 'reduce_lr_on_plateau':
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, 
+            mode='min',
+            patience=kwargs.get('patience', 3),
+            factor=kwargs.get('factor', 0.5),
+            min_lr=kwargs.get('min_lr', 1e-7)
+        )
+    elif scheduler_type == 'step':
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=kwargs.get('step_size', 7),
+            gamma=kwargs.get('gamma', 0.1)
+        )
+    elif scheduler_type == 'cosine':
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=kwargs.get('t_max', 10),
+            eta_min=kwargs.get('min_lr', 1e-7)
+        )
+    elif scheduler_type == 'exponential':
+        return torch.optim.lr_scheduler.ExponentialLR(
+            optimizer,
+            gamma=kwargs.get('gamma', 0.95)
+        )
+    elif scheduler_type == 'one_cycle':
+        # OneCycleLR requires total steps, so we'll need to calculate it
+        # This is a placeholder - actual implementation would need total steps
+        return torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=kwargs.get('max_lr', 0.001),
+            epochs=kwargs.get('epochs', 10),
+            steps_per_epoch=kwargs.get('steps_per_epoch', 100),
+            pct_start=kwargs.get('warmup_epochs', 0) / kwargs.get('epochs', 10)
+        )
+    else:
+        print(f"Warning: Unknown scheduler type '{scheduler_type}'. No scheduler will be used.")
+        return None
+
+
+def get_current_lr(optimizer):
+    """Get the current learning rate from the optimizer."""
+    return optimizer.param_groups[0]['lr']
+
+
+def log_lr_change(epoch, optimizer, scheduler_type, val_loss=None):
+    """Log learning rate changes."""
+    current_lr = get_current_lr(optimizer)
+    if scheduler_type == 'reduce_lr_on_plateau':
+        print(f"Epoch {epoch}: Learning Rate = {current_lr:.6f}, Validation Loss = {val_loss:.5f}")
+    else:
+        print(f"Epoch {epoch}: Learning Rate = {current_lr:.6f}")
+
+
+def create_run_directory(base_dir, dataset_type, decoder_type, **kwargs):
+    """
+    Create a unique directory for each training run with timestamp and parameter summary.
+    
+    Args:
+        base_dir: Base directory for saving models
+        dataset_type: Type of dataset (flickr8k/flickr30k)
+        decoder_type: Type of decoder (lstm/attention)
+        **kwargs: Additional parameters to include in directory name
+    
+    Returns:
+        Unique directory path for this run
+    """
+    import json
+    
+    # Create timestamp for uniqueness
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    
+    # Create parameter summary for directory name
+    param_parts = []
+    
+    # Add key parameters to directory name
+    if 'epochs' in kwargs:
+        param_parts.append(f"ep{kwargs['epochs']}")
+    if 'batch_size' in kwargs:
+        param_parts.append(f"bs{kwargs['batch_size']}")
+    if 'learning_rate' in kwargs:
+        lr_str = f"{kwargs['learning_rate']:.0e}".replace('e-0', 'e').replace('e+0', 'e')
+        param_parts.append(f"lr{lr_str}")
+    if 'use_scheduler' in kwargs and kwargs['use_scheduler']:
+        scheduler_type = kwargs.get('scheduler_type', 'unknown')
+        param_parts.append(f"{scheduler_type}")
+    if 'save_attention_viz' in kwargs and kwargs['save_attention_viz']:
+        param_parts.append("att")
+    
+    # Create directory name
+    param_str = "_".join(param_parts) if param_parts else "default"
+    run_name = f"{dataset_type}_{decoder_type}_{param_str}_{timestamp}"
+    
+    # Create the full directory path
+    encoder_type = 'resnet'  # currently always resnet50
+    run_dir = os.path.join(base_dir, dataset_type, f"{encoder_type}_{decoder_type}", run_name)
+    
+    # Create the directory
+    os.makedirs(run_dir, exist_ok=True)
+    
+    # Save all parameters to a JSON file
+    config = {
+        'dataset_type': dataset_type,
+        'decoder_type': decoder_type,
+        'timestamp': timestamp,
+        'run_name': run_name,
+        **kwargs
+    }
+    
+    config_file = os.path.join(run_dir, 'run_config.json')
+    with open(config_file, 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    # Save a human-readable summary
+    summary_file = os.path.join(run_dir, 'run_summary.txt')
+    with open(summary_file, 'w') as f:
+        f.write(f"Training Run Summary\n")
+        f.write(f"===================\n\n")
+        f.write(f"Run Directory: {run_name}\n")
+        f.write(f"Timestamp: {timestamp}\n\n")
+        f.write(f"Dataset: {dataset_type}\n")
+        f.write(f"Decoder: {decoder_type}\n")
+        
+        for key, value in kwargs.items():
+            if key not in ['dataset_type', 'decoder_type']:
+                f.write(f"{key}: {value}\n")
+        
+        f.write(f"\nFull configuration saved to: run_config.json\n")
+    
+    print(f"Created run directory: {run_dir}")
+    print(f"Configuration saved to: {config_file}")
+    
+    return run_dir
 
 
 def create_data_loader(batch_size=4, num_workers=0, dataset_type='flickr8k'):
@@ -445,6 +790,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
     import json
     training_losses = []
     validation_losses = []
+    learning_rates = []  # Track learning rate changes
     epochs_list = []
     metrics_history = []
     previous_epochs = start_epoch - 1
@@ -460,12 +806,14 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
                 prev_loss = json.load(f)
                 training_losses = prev_loss.get('training_losses', [])
                 validation_losses = prev_loss.get('validation_losses', [])
+                learning_rates = prev_loss.get('learning_rates', [])  # Load learning rates
                 epochs_list = prev_loss.get('epochs', [])
         else:
             # Fallback: use metrics_history length
             epochs_list = list(range(1, previous_epochs + 1))
             training_losses = [None] * previous_epochs
             validation_losses = [None] * previous_epochs
+            learning_rates = [None] * previous_epochs  # Initialize learning rates
     
     # Reference images for comparison
     ref_save_path = os.path.join(model_save_dir, 'reference_indices.json')
@@ -528,6 +876,35 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         print(f"  Training Loss: {avg_epoch_loss:.5f}")
         print(f"  Validation Loss: {val_loss:.5f}")
 
+        # Learning rate scheduling
+        if scheduler is not None:
+            # Step the scheduler based on its type
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
+            
+            # Log learning rate change
+            current_lr = get_current_lr(optimizer)
+            learning_rates.append(current_lr)  # Track learning rate
+            print(f"  Learning Rate: {current_lr:.6f}")
+            
+            # Log detailed scheduler information
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                print(f"  Scheduler: ReduceLROnPlateau (patience={scheduler.patience}, factor={scheduler.factor})")
+            elif isinstance(scheduler, torch.optim.lr_scheduler.StepLR):
+                print(f"  Scheduler: StepLR (step_size={scheduler.step_size}, gamma={scheduler.gamma})")
+            elif isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR):
+                print(f"  Scheduler: CosineAnnealingLR (T_max={scheduler.T_max})")
+            elif isinstance(scheduler, torch.optim.lr_scheduler.ExponentialLR):
+                print(f"  Scheduler: ExponentialLR (gamma={scheduler.gamma})")
+            elif isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                print(f"  Scheduler: OneCycleLR")
+        else:
+            current_lr = get_current_lr(optimizer)
+            learning_rates.append(current_lr)  # Track learning rate
+            print(f"  Learning Rate: {current_lr:.6f} (no scheduler)")
+
         # Plot loss after each epoch
         plt.figure(figsize=(8,4))
         plt.plot(epochs_list, training_losses, label='Train Loss')
@@ -555,7 +932,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         save_loss_curves(epochs_list, training_losses, validation_losses, model_save_dir)
         # Save to JSON for future resuming
         with open(os.path.join(model_save_dir, 'loss_curve.json'), 'w') as f:
-            json.dump({'epochs': epochs_list, 'training_losses': training_losses, 'validation_losses': validation_losses}, f, indent=2)
+            json.dump({'epochs': epochs_list, 'training_losses': training_losses, 'validation_losses': validation_losses, 'learning_rates': learning_rates}, f, indent=2)
         save_metrics_history(metrics_history, model_save_dir)
 
         # Reference image comparison (for both decoders if available)
@@ -580,119 +957,14 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         'epochs': epochs_list,
         'training_losses': training_losses,
         'validation_losses': validation_losses,
+        'learning_rates': learning_rates,  # Add learning rate history
         'metrics_history': metrics_history,
         'dataset_type': dataset_type
     }
+    # Save training info to JSON
+    with open(os.path.join(model_save_dir, 'training_info.json'), 'w') as f:
+        json.dump(model_info, f, indent=2)
     create_loss_plots(model_info, model_save_dir)
-    print("Training completed!")
-    return model_info
-    validation_losses = []
-    model_info = {
-        'epochs': [],
-        'training_losses': [],
-        'validation_losses': [],
-        'model_files': [],
-        'timestamps': [],
-        'dataset_type': dataset_type,
-        'hyperparameters': {
-            'embed_size': model.encoder.embed.out_features,
-            'hidden_size': model.decoder.lstm.hidden_size,
-            'vocab_size': vocab_size,
-            'num_layers': model.decoder.lstm.num_layers,
-            'learning_rate': learning_rate,
-            'batch_size': data_loader.batch_size,
-            'dataset_type': dataset_type
-        }
-    }
-    
-    print(f"Starting training for {num_epochs} epochs on {dataset_type} dataset...")
-    total_batches = len(data_loader)
-    
-    for epoch in range(1, num_epochs + 1):
-        model.train()
-        epoch_loss = 0.0
-        
-        # Create progress bar for current epoch
-        pbar = tqdm(data_loader, desc=f'Epoch {epoch}/{num_epochs}', 
-                   unit='batch', leave=True)
-        
-        for idx, (image, captions) in enumerate(pbar):
-            image, captions = image.to(device), captions.to(device)
-            
-            # Zero the gradients
-            optimizer.zero_grad()
-            
-            # Forward pass
-            outputs = model(image, captions)
-            
-            # Calculate loss
-            loss = criterion(outputs.reshape(-1, vocab_size), captions[:, 1:].reshape(-1))
-            
-            # Backward pass
-            loss.backward()
-            
-            # Gradient clipping to prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
-            # Update parameters
-            optimizer.step()
-            
-            # Update epoch loss
-            epoch_loss += loss.item()
-            
-            # Update progress bar with current loss
-            pbar.set_postfix({
-                'Loss': f'{loss.item():.5f}',
-                'Avg Loss': f'{epoch_loss/(idx+1):.5f}'
-            })
-        
-        # Calculate average epoch loss
-        avg_epoch_loss = epoch_loss / total_batches
-        training_losses.append(avg_epoch_loss)
-        
-        # Calculate validation loss (using a subset of training data for simplicity)
-        val_loss = calculate_validation_loss(model, data_loader, criterion, vocab_size, device)
-        validation_losses.append(val_loss)
-        
-        # Save model after each epoch
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        model_filename = f"model_epoch_{epoch:02d}_loss_{avg_epoch_loss:.4f}_{timestamp}.pt"
-        model_path = os.path.join(model_save_dir, model_filename)
-        
-        # Save model state
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'training_loss': avg_epoch_loss,
-            'validation_loss': val_loss,
-            'vocab': dataset.vocab,
-            'hyperparameters': model_info['hyperparameters']
-        }, model_path)
-        
-        # Update model info
-        model_info['epochs'].append(epoch)
-        model_info['training_losses'].append(avg_epoch_loss)
-        model_info['validation_losses'].append(val_loss)
-        model_info['model_files'].append(model_filename)
-        model_info['timestamps'].append(timestamp)
-        
-        # Save training info to JSON
-        with open(os.path.join(model_save_dir, 'training_info.json'), 'w') as f:
-            json.dump(model_info, f, indent=2)
-        
-        # Evaluate intermediate model
-        eval_intermediate_model_dur_train(epoch, model, data_loader, dataset, device)
-        
-        # Print epoch summary
-        print(f"\nEpoch {epoch} completed:")
-        print(f"  Training Loss: {avg_epoch_loss:.5f}")
-        print(f"  Validation Loss: {val_loss:.5f}")
-        print(f"  Model saved: {model_filename}")
-    
-    # Create and save loss plots
-    create_loss_plots(model_info, model_save_dir)
-    
     print("Training completed!")
     return model_info
 
@@ -725,13 +997,15 @@ def calculate_validation_loss(model, data_loader, criterion, vocab_size, device,
 
 
 def create_loss_plots(model_info, save_dir):
-    """Create and save training/validation loss plots."""
+    """Create and save training/validation loss plots and learning rate plot."""
     epochs = model_info['epochs']
     train_losses = model_info['training_losses']
     val_losses = model_info['validation_losses']
+    learning_rates = model_info.get('learning_rates', [])  # Get learning rates from model_info
     dataset_type = model_info.get('dataset_type', 'unknown')
     
-    plt.figure(figsize=(12, 8))
+    # Create main loss plots
+    plt.figure(figsize=(15, 10))
     
     # Training and validation loss plot
     plt.subplot(2, 2, 1)
@@ -772,6 +1046,22 @@ def create_loss_plots(model_info, save_dir):
     plt.savefig(os.path.join(save_dir, 'training_losses.png'), dpi=300, bbox_inches='tight')
     plt.show()
     plt.close()
+    
+    # Create separate learning rate plot if learning rates are available
+    if learning_rates:
+        plt.figure(figsize=(12, 6))
+        plt.plot(epochs, learning_rates, 'g-', label='Learning Rate', linewidth=2, marker='o', markersize=4)
+        plt.xlabel('Epoch')
+        plt.ylabel('Learning Rate')
+        plt.title(f'Learning Rate Over Time - {dataset_type.upper()}')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.yscale('log')  # Use log scale for better visualization
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, 'learning_rate.png'), dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+        print(f"Learning rate plot saved to {os.path.join(save_dir, 'learning_rate.png')}")
     
     print(f"Loss plots saved to {os.path.join(save_dir, 'training_losses.png')}")
 
@@ -845,7 +1135,8 @@ def test_model(model, dataset, device, num_samples=5, dataset_type='flickr8k'):
 
 def main(args):
     """Main function to run the image captioning pipeline."""
-    print("Flickr Image Captioning with PyTorch ResNet-LSTM/LSTM-Attention")
+    global MODEL_SAVE_DIR
+    print("Flickr Image Captioning with PyTorch ResNet-LSTM")
     print("=" * 50)
     
     # Enhanced device detection and debugging
@@ -916,14 +1207,100 @@ def main(args):
         else:
             print(f"Initializing model with embed_size={embed_size}, hidden_size={hidden_size}, vocab_size={vocab_size}, num_layers={num_layers}, decoder_type={args.decoder}, attention_dim={attention_dim}, drop_prob={drop_prob}")
             model = EncoderDecoder(embed_size, hidden_size, vocab_size, num_layers, decoder_type=args.decoder, attention_dim=attention_dim, drop_prob=drop_prob).to(device)
-            optimizer = torch.optim.Adam(model.parameters())
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+            
+            # Create scheduler for new training runs
+            if args.use_scheduler:
+                print(f"Creating {args.scheduler_type} scheduler...")
+                scheduler_kwargs = {
+                    'patience': args.scheduler_patience,
+                    'factor': args.scheduler_factor,
+                    'step_size': args.scheduler_step_size,
+                    'gamma': args.scheduler_gamma,
+                    't_max': args.scheduler_t_max,
+                    'min_lr': args.min_lr,
+                    'epochs': args.epochs,
+                    'steps_per_epoch': len(data_loader),
+                    'warmup_epochs': args.warmup_epochs
+                }
+                scheduler = create_scheduler(optimizer, args.scheduler_type, **scheduler_kwargs)
+                print(f"Scheduler created: {scheduler}")
+            else:
+                scheduler = None
+                print("No scheduler will be used (constant learning rate)")
+        
         print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+        print(f"Initial learning rate: {get_current_lr(optimizer):.6f}")
         print("\nStarting training...")
-        base_lr = 0.0001
-        scaled_lr = base_lr * (args.batch_size / 16)  # Scale learning rate based on batch size
-        training_info = train_model(model, data_loader, dataset, device, num_epochs=args.epochs, print_every=1000, learning_rate=scaled_lr, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset, start_epoch=start_epoch, optimizer=optimizer, scheduler=scheduler, decoder_type=args.decoder)
+        
+        # Create unique run directory with all parameters
+        run_params = {
+            'epochs': args.epochs,
+            'batch_size': args.batch_size,
+            'learning_rate': args.learning_rate,
+            'embed_size': embed_size,
+            'hidden_size': hidden_size,
+            'num_layers': num_layers,
+            'attention_dim': attention_dim,
+            'drop_prob': drop_prob,
+            'num_workers': args.num_workers,
+            'use_scheduler': args.use_scheduler,
+            'scheduler_type': args.scheduler_type if args.use_scheduler else None,
+            'scheduler_patience': args.scheduler_patience,
+            'scheduler_factor': args.scheduler_factor,
+            'scheduler_step_size': args.scheduler_step_size,
+            'scheduler_gamma': args.scheduler_gamma,
+            'scheduler_t_max': args.scheduler_t_max,
+            'min_lr': args.min_lr,
+            'warmup_epochs': args.warmup_epochs,
+            'save_attention_viz': args.save_attention_viz,
+            'attention_viz_samples': args.attention_viz_samples,
+            'advanced_attention_viz': args.advanced_attention_viz
+        }
+        # Create a unique run directory for this training run
+        run_dir = create_run_directory(MODEL_SAVE_DIR, args.dataset_type if hasattr(args, 'dataset_type') else args.dataset, args.decoder, **run_params)
+        
+        # Override MODEL_SAVE_DIR for this run
+        original_model_save_dir = MODEL_SAVE_DIR
+        MODEL_SAVE_DIR = run_dir
+        
+        # Use the learning rate from args instead of manual scaling
+        training_info = train_model(
+            model, data_loader, dataset, device, 
+            num_epochs=args.epochs, 
+            print_every=1000, 
+            learning_rate=args.learning_rate,  # Use args.learning_rate directly
+            dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset, 
+            start_epoch=start_epoch, 
+            optimizer=optimizer, 
+            scheduler=scheduler, 
+            decoder_type=args.decoder
+        )
+        
+        # Restore original MODEL_SAVE_DIR
+        MODEL_SAVE_DIR = original_model_save_dir
+        
         print("\nTesting model...")
         test_model(model, dataset, device, num_samples=3, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
+        
+        # Create attention visualizations if using attention decoder
+        if args.decoder == 'attention' and args.save_attention_viz:
+            print("\nCreating attention visualizations...")
+            create_attention_visualization(
+                model, dataset, device, dataset.vocab, 
+                num_samples=args.attention_viz_samples, 
+                save_dir=run_dir,
+                dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset
+            )
+            
+            # Create advanced attention visualizations if requested
+            if args.advanced_attention_viz:
+                print("\nCreating advanced attention visualizations...")
+                create_advanced_attention_visualization(
+                    model, dataset, device, dataset.vocab,
+                    num_samples=args.attention_viz_samples,
+                    save_dir=run_dir
+                )
 
     print("\nPipeline completed!")
 
@@ -948,6 +1325,23 @@ if __name__ == "__main__":
                         help='Attention dimension (if using attention decoder)')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate')
     parser.add_argument('--drop_prob', type=float, default=0.3, help='Dropout probability')
+    
+    # Learning rate scheduling arguments
+    parser.add_argument('--use_scheduler', action='store_true', help='Use learning rate scheduler')
+    parser.add_argument('--scheduler_type', type=str, default='reduce_lr_on_plateau', 
+                       choices=['reduce_lr_on_plateau', 'step', 'cosine', 'exponential', 'one_cycle'], 
+                       help='Type of learning rate scheduler')
+    parser.add_argument('--scheduler_patience', type=int, default=3, help='Patience for ReduceLROnPlateau scheduler')
+    parser.add_argument('--scheduler_factor', type=float, default=0.5, help='Factor for reducing learning rate')
+    parser.add_argument('--scheduler_step_size', type=int, default=7, help='Step size for StepLR scheduler')
+    parser.add_argument('--scheduler_gamma', type=float, default=0.1, help='Gamma for StepLR scheduler')
+    parser.add_argument('--scheduler_t_max', type=int, default=10, help='T_max for CosineAnnealingLR scheduler')
+    parser.add_argument('--min_lr', type=float, default=1e-7, help='Minimum learning rate')
+    parser.add_argument('--warmup_epochs', type=int, default=0, help='Number of warmup epochs for OneCycleLR')
+    
+    parser.add_argument('--save_attention_viz', action='store_true', help='Save attention visualizations (only for attention decoder)')
+    parser.add_argument('--attention_viz_samples', type=int, default=3, help='Number of attention visualization samples')
+    parser.add_argument('--advanced_attention_viz', action='store_true', help='Create advanced attention visualizations with heatmaps')
     args = parser.parse_args()
 
     # Set paths for backward compatibility

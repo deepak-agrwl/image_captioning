@@ -31,3 +31,6 @@ ipykernel
 nltk
 jiwer
 rouge-score
+
+# System monitoring
+psutil
