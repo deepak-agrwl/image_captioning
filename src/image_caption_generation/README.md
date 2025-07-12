@@ -51,6 +51,20 @@ python flickr_image_caption_with_pytorch_resnet_lstm.py \
     --attention_viz_samples 3
 ```
 
+### 4. Train with Flickr30k + (without Attention) + Cosine LR Scheduling + 
+```bash
+python flickr_image_caption_with_pytorch_resnet_lstm.py \
+    --dataset_type flickr30k \
+    --decoder lstm \
+    --epochs 30 \
+    --batch_size 128 \
+    --learning_rate 0.0001 \
+    --use_scheduler \
+    --scheduler_type cosine \
+    --scheduler_t_max 20 \
+    --min_lr 1e-6
+```
+
 ## 📋 Overview
 
 The model architecture consists of:

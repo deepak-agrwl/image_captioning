@@ -104,7 +104,7 @@ def verify_dataset_structure(dataset_type):
     elif dataset_type == 'flickr30k':
         expected_paths = [
             'resources/input/flickr30k/flickr30k_images/flickr30k_images',
-            'resources/input/flickr30k/flickr30k_images/captions.csv'
+            'resources/input/flickr30k/flickr30k_images/results.csv'
         ]
     else:
         print(f"✗ Unknown dataset type: {dataset_type}")
