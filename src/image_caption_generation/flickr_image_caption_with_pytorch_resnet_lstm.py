@@ -796,7 +796,7 @@ def test_model(model, dataset, device, num_samples=5, dataset_type='flickr8k'):
             plt.close()
 
 
-def main():
+def main(args):
     """Main function to run the image captioning pipeline."""
     print("Flickr Image Captioning with PyTorch ResNet-LSTM/LSTM-Attention")
     print("=" * 50)
@@ -807,16 +807,7 @@ def main():
         device = torch.device("mps")
     print(f"Using device: {device}")
     
-    # Check if user wants to load existing model or train new one
-
-    parser = argparse.ArgumentParser(description='Image Captioning Training/Testing')
-    parser.add_argument('--mode', choices=['train', 'test'], default='train', help='Mode: train new model or test existing model')
-    parser.add_argument('--model_path', type=str, default=None, help='Path to saved model for testing')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
-    parser.add_argument('--dataset', choices=['flickr8k', 'flickr30k'], default=DEFAULT_DATASET, help='Dataset to use for training/testing')
-    parser.add_argument('--decoder', choices=['lstm', 'attention'], default='lstm', help='Decoder type: lstm or attention (lstm+attention)')
-    args = parser.parse_args()
-    print(f"Using dataset: {args.dataset}")
+    print(f"Using dataset: {args.dataset_type if hasattr(args, 'dataset_type') else args.dataset}")
     print(f"Decoder type: {args.decoder}")
     if args.mode == 'test' and args.model_path:
         print(f"Loading model from: {args.model_path}")
@@ -824,12 +815,12 @@ def main():
         print(f"Loaded model from epoch {checkpoint['epoch']}")
         print(f"Training Loss: {checkpoint['training_loss']:.5f}")
         print(f"Validation Loss: {checkpoint['validation_loss']:.5f}")
-        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4, dataset_type=args.dataset)
+        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
         dataset.vocab = vocab
-        test_model(model, dataset, device, num_samples=5, dataset_type=args.dataset)
+        test_model(model, dataset, device, num_samples=5, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
     else:
         print("Creating data loader...")
-        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4, dataset_type=args.dataset)
+        data_loader, dataset = create_data_loader(batch_size=32, num_workers=4, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
         print(f"Dataset size: {len(dataset)}")
         print(f"Vocabulary size: {len(dataset.vocab)}")
         embed_size = 400
@@ -861,9 +852,9 @@ def main():
         print("\nStarting training...")
         base_lr = 0.0001
         scaled_lr = base_lr * (32 / 16)
-        training_info = train_model(model, data_loader, dataset, device, num_epochs=args.epochs, print_every=1000, learning_rate=scaled_lr, dataset_type=args.dataset, start_epoch=start_epoch, optimizer=optimizer, scheduler=scheduler, decoder_type=args.decoder)
+        training_info = train_model(model, data_loader, dataset, device, num_epochs=args.epochs, print_every=1000, learning_rate=scaled_lr, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset, start_epoch=start_epoch, optimizer=optimizer, scheduler=scheduler, decoder_type=args.decoder)
         print("\nTesting model...")
-        test_model(model, dataset, device, num_samples=3, dataset_type=args.dataset)
+        test_model(model, dataset, device, num_samples=3, dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset)
 
     print("\nPipeline completed!")
 
@@ -891,12 +882,6 @@ if __name__ == "__main__":
     if args.captions_file is not None:
         DATASET_CONFIGS[args.dataset_type]['captions_file'] = args.captions_file
 
-    # Pass new args to main if needed
-    main_args = {
-        'mode': args.mode,
-        'model_path': args.model_path,
-        'epochs': args.epochs,
-        'decoder': args.decoder
-    }
-    main(**main_args) if main.__code__.co_argcount > 0 else main()
+    # Pass parsed args to main
+    main(args)
 
