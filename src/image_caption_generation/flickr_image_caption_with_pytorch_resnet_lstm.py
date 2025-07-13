@@ -31,6 +31,7 @@ import torchvision.transforms as T
 import torch.optim.lr_scheduler
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, random_split
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
 from tqdm import tqdm
 import json
 import time
@@ -337,12 +338,17 @@ class DecoderRNNWithAttention(nn.Module):
 
 
 class EncoderDecoder(nn.Module):
-    """Complete encoder-decoder model. Supports LSTM and LSTM+Attention."""
-    def __init__(self, embed_size, hidden_size, vocab_size, num_layers=1, drop_prob=0.3, decoder_type='lstm', attention_dim=256):
+    """Complete encoder-decoder model. Supports LSTM and LSTM+Attention, and GPT-2."""
+    def __init__(self, embed_size, hidden_size, vocab_size, num_layers=1, drop_prob=0.3, decoder_type='lstm', 
+                 attention_dim=256):
         super(EncoderDecoder, self).__init__()
         self.encoder = EncoderCNN(embed_size)
         if decoder_type == 'attention':
-            self.decoder = DecoderRNNWithAttention(embed_size, hidden_size, vocab_size, encoder_dim=embed_size, attention_dim=attention_dim, num_layers=num_layers, drop_prob=drop_prob)
+            self.decoder = DecoderRNNWithAttention(embed_size, hidden_size, vocab_size, encoder_dim=embed_size,
+                                                   attention_dim=attention_dim, num_layers=num_layers, 
+                                                   drop_prob=drop_prob)
+        elif decoder_type == 'gpt2':
+            self.decoder = GPT2Decoder(vocab_size, embed_size, hidden_size, num_layers=num_layers, drop_prob=drop_prob)
         else:
             self.decoder = DecoderRNN(embed_size, hidden_size, vocab_size, num_layers, drop_prob)
 
@@ -351,6 +357,32 @@ class EncoderDecoder(nn.Module):
         outputs = self.decoder(features, captions)
         return outputs
 
+class GPT2Decoder(nn.Module):
+    def __init__(self, vocab_size, embed_size, hidden_size, num_layers=1, drop_prob=0.3):
+        super(GPT2Decoder, self).__init__()
+        self.gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2')
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.fc = nn.Linear(hidden_size, vocab_size)
+        self.drop = nn.Dropout(drop_prob)
+
+    def forward(self, features, captions):
+        # Use GPT-2 to generate captions
+        outputs = self.gpt2_model(input_ids=captions[:, :-1], labels=captions[:, 1:])
+        return outputs.logits
+
+    def generate_caption(self, features, max_len=20, vocab=None):
+        # Use GPT-2 to generate captions
+        input_ids = torch.full((1, 1), vocab.stoi["<SOS>"], dtype=torch.long, device=features.device)
+        output_ids = []
+        for _ in range(max_len):
+            outputs = self.gpt2_model(input_ids=input_ids)
+            logits = outputs.logits[:, -1, :]
+            predicted_id = torch.argmax(logits, dim=-1)
+            output_ids.append(predicted_id.item())
+            if vocab.itos[predicted_id.item()] == "<EOS>":
+                break
+            input_ids = torch.cat((input_ids, predicted_id.unsqueeze(0).unsqueeze(0)), dim=1)
+        return [vocab.itos[idx] for idx in output_ids]
 
 def show_image(inp, title=None):
     """Display image with optional title."""
@@ -1315,7 +1347,8 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'test'], help='Mode: train or test')
     parser.add_argument('--model_path', type=str, default=None, help='Path to save/load the model')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
-    parser.add_argument('--decoder', type=str, default='lstm', choices=['lstm', 'attention'], help='Decoder type: lstm or attention')
+    parser.add_argument('--decoder', type=str, default='lstm', choices=['lstm', 'attention', 'gpt2'], 
+                        help='Decoder type: lstm or attention, or gpt2')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training (default: 128)')
     parser.add_argument('--num_workers', type=int, default=16, help='Number of workers for data loading (default: 16)')
     parser.add_argument('--embed_size', type=int, default=512, help='Embedding size')
