@@ -422,6 +422,9 @@ class GPT2Decoder(nn.Module):
         self.fc = nn.Linear(self.gpt2_model.config.n_embd, vocab_size)
         self.drop = nn.Dropout(drop_prob)
 
+        # Store num_layers for compatibility with checkpoint saving
+        self.num_layers = num_layers  # Store the passed value for compatibility, though not used directly
+
         # Create a mapping from custom vocab to GPT-2 vocab (approximate)
         self.custom_to_gpt2_map = self._create_vocab_mapping()
 
