@@ -113,9 +113,13 @@ The model architecture consists of:
 ## 🛠️ Setup Instructions
 
 ### 1. Install Dependencies
+Note: If venv needs to be installed
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
 ```bash
 pip install -r requirements.txt
-python -m spacy download en_core_web_sm
 ```
 
 ### 2. Download Datasets
