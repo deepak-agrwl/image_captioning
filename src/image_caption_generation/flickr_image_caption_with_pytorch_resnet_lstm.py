@@ -495,14 +495,14 @@ class GPT2Decoder(nn.Module):
 
     def generate_caption(self, features, max_len=20, vocab=None):
         device = features.device
-        input_ids = torch.tensor([self.gpt2_tokenizer.bos_token_id], dtype=torch.long, device=device).unsqueeze(0)  # Start with <SOS>
+        input_ids = torch.tensor([self.gpt2_tokenizer.bos_token_id if self.gpt2_tokenizer.bos_token_id is not None else self.gpt2_tokenizer.eos_token_id], 
+                                 dtype=torch.long, device=device).unsqueeze(0)  # Start with <SOS>
         output_ids = []
         
         for _ in range(max_len):
-            outputs = self.gpt2_model(input_ids=input_ids)
-            logits = outputs.logits[:, -1, :]  # Logits for the last token
-            # Map logits to custom vocab for consistency with other decoders
-            custom_logits = self.fc(logits)
+            outputs = self.gpt2_model(input_ids=input_ids, output_hidden_states=True)
+            hidden_states = outputs.hidden_states[-1][:, -1, :]  # Last token's hidden state (batch_size, hidden_size=768)
+            custom_logits = self.fc(self.drop(hidden_states))  # Map to custom vocab (batch_size, custom_vocab_size)
             predicted_id = torch.argmax(custom_logits, dim=-1)
             custom_id = predicted_id.item()
             output_ids.append(custom_id)
@@ -511,7 +511,8 @@ class GPT2Decoder(nn.Module):
                 break
             
             # Map custom ID back to GPT-2 ID for next input
-            gpt2_id = self.custom_to_gpt2_map.get(custom_id, self.gpt2_tokenizer.unk_token_id)
+            gpt2_id = self.custom_to_gpt2_map.get(custom_id, 
+                                                  self.gpt2_tokenizer.unk_token_id if self.gpt2_tokenizer.unk_token_id is not None else 50256)
             input_ids = torch.cat((input_ids, torch.tensor([[gpt2_id]], dtype=torch.long, device=device)), dim=1)
         
         return [vocab.itos[idx] for idx in output_ids]
