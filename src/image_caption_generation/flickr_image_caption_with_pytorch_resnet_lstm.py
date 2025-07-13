@@ -32,6 +32,7 @@ import torch.optim.lr_scheduler
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, random_split
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from transformers import ViTModel, ViTFeatureExtractor
 from tqdm import tqdm
 import json
 import time
@@ -205,6 +206,41 @@ class EncoderCNN(nn.Module):
         features = self.embed(features)
         return features
 
+class EncoderViT(nn.Module):
+    """Vision Transformer encoder for image feature extraction."""
+    def __init__(self, embed_size, model_name='google/vit-base-patch16-224'):
+        super(EncoderViT, self).__init__()
+        # Load pre-trained ViT model and feature extractor
+        self.vit = ViTModel.from_pretrained(model_name)
+        self.feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
+        
+        # Freeze ViT parameters to prevent training
+        for param in self.vit.parameters():
+            param.requires_grad_(False)
+        
+        # Linear layer to map ViT output to desired embed_size
+        self.embed = nn.Linear(self.vit.config.hidden_size, embed_size)
+
+    def forward(self, images):
+        # images: (batch_size, channels, height, width)
+        # ViT expects pixel values in a specific format, so we'll handle preprocessing
+        batch_size = images.size(0)
+        device = images.device
+        
+        # Convert images to format expected by ViT (using feature extractor if needed)
+        # For simplicity, assuming images are already in [0, 1] range and resized to 224x224
+        inputs = {
+            'pixel_values': images.to(device)
+        }
+        
+        # Get ViT output (last hidden state of the [CLS] token)
+        with torch.no_grad():
+            outputs = self.vit(**inputs)
+            cls_hidden_state = outputs.last_hidden_state[:, 0, :]  # (batch_size, hidden_size)
+        
+        # Project to desired embed_size
+        features = self.embed(cls_hidden_state)  # (batch_size, embed_size)
+        return features
 
 class DecoderRNN(nn.Module):
     """RNN decoder using LSTM (no attention)."""
@@ -338,17 +374,23 @@ class DecoderRNNWithAttention(nn.Module):
 
 
 class EncoderDecoder(nn.Module):
-    """Complete encoder-decoder model. Supports LSTM and LSTM+Attention, and GPT-2."""
-    def __init__(self, embed_size, hidden_size, vocab_size, num_layers=1, drop_prob=0.3, decoder_type='lstm', 
-                 attention_dim=256):
+    """Complete encoder-decoder model. Supports different encoders and decoders."""
+    def __init__(self, embed_size, hidden_size, vocab_size, custom_vocab, num_layers=1, drop_prob=0.3, decoder_type='lstm', 
+                 encoder_type='resnet', attention_dim=256):
         super(EncoderDecoder, self).__init__()
-        self.encoder = EncoderCNN(embed_size)
+        # Select encoder based on type
+        if encoder_type == 'vit':
+            self.encoder = EncoderViT(embed_size)
+        else: # default to ResNet50
+            self.encoder = EncoderCNN(embed_size)
+
         if decoder_type == 'attention':
             self.decoder = DecoderRNNWithAttention(embed_size, hidden_size, vocab_size, encoder_dim=embed_size,
                                                    attention_dim=attention_dim, num_layers=num_layers, 
                                                    drop_prob=drop_prob)
         elif decoder_type == 'gpt2':
-            self.decoder = GPT2Decoder(vocab_size, embed_size, hidden_size, num_layers=num_layers, drop_prob=drop_prob)
+            self.decoder = GPT2Decoder(vocab_size, embed_size, hidden_size, custom_vocab, num_layers=num_layers, 
+                                       drop_prob=drop_prob)
         else:
             self.decoder = DecoderRNN(embed_size, hidden_size, vocab_size, num_layers, drop_prob)
 
@@ -358,30 +400,120 @@ class EncoderDecoder(nn.Module):
         return outputs
 
 class GPT2Decoder(nn.Module):
-    def __init__(self, vocab_size, embed_size, hidden_size, num_layers=1, drop_prob=0.3):
+    def __init__(self, vocab_size, embed_size, hidden_size, custom_vocab, num_layers=1, drop_prob=0.3):
         super(GPT2Decoder, self).__init__()
+        # Load pre-trained GPT-2 model and tokenizer
         self.gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2')
-        self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.fc = nn.Linear(hidden_size, vocab_size)
+        self.gpt2_tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+
+        # Set default special tokens if not defined
+        if self.gpt2_tokenizer.pad_token_id is None:
+            self.gpt2_tokenizer.pad_token = self.gpt2_tokenizer.eos_token  # Use EOS as PAD if PAD is not defined
+        if self.gpt2_tokenizer.bos_token_id is None:
+            self.gpt2_tokenizer.bos_token = self.gpt2_tokenizer.convert_tokens_to_ids("<|endoftext|>")  # Fallback for SOS
+        if self.gpt2_tokenizer.eos_token_id is None:
+            self.gpt2_tokenizer.eos_token = self.gpt2_tokenizer.convert_tokens_to_ids("<|endoftext|>")  # Fallback for EOS
+        
+        # Store custom vocabulary for mapping back to dataset tokens
+        self.custom_vocab = custom_vocab
+        self.custom_vocab_size = vocab_size
+
+        # Linear layer to map GPT-2 hidden states to custom vocab size (for output)
+        self.fc = nn.Linear(self.gpt2_model.config.n_embd, vocab_size)
         self.drop = nn.Dropout(drop_prob)
 
+        # Create a mapping from custom vocab to GPT-2 vocab (approximate)
+        self.custom_to_gpt2_map = self._create_vocab_mapping()
+
+    def _create_vocab_mapping(self):
+        """Create an approximate mapping from custom vocab to GPT-2 vocab."""
+        mapping = {}
+        gpt2_vocab = self.gpt2_tokenizer.get_vocab()
+        for idx in self.custom_vocab.itos:
+            token = self.custom_vocab.itos.get(idx, "<UNK>")
+            if token in ["<PAD>", "<SOS>", "<EOS>", "<UNK>"]:
+                # Map special tokens to corresponding GPT-2 tokens or a placeholder
+                if token == "<PAD>":
+                    mapping[idx] = self.gpt2_tokenizer.pad_token_id
+                elif token == "<SOS>":
+                    mapping[idx] = self.gpt2_tokenizer.bos_token_id
+                elif token == "<EOS>":
+                    mapping[idx] = self.gpt2_tokenizer.eos_token_id
+                else:  # <UNK>
+                    mapping[idx] = self.gpt2_tokenizer.unk_token_id
+            else:
+                # Try to find the token in GPT-2 vocab
+                if token in gpt2_vocab:
+                    mapping[idx] = gpt2_vocab[token]
+                else:
+                    # If not found, tokenize the word and take the first token ID (approximation)
+                    token_ids = self.gpt2_tokenizer.encode(token, add_special_tokens=False)
+                    mapping[idx] = token_ids[0] if token_ids else self.gpt2_tokenizer.unk_token_id
+        return mapping
+
+    def _map_custom_to_gpt2(self, custom_ids):
+        """Map custom token IDs to GPT-2 token IDs."""
+        gpt2_ids = []
+        for cid in custom_ids:
+            gpt2_id = self.custom_to_gpt2_map.get(cid.item(), self.gpt2_tokenizer.unk_token_id)
+            gpt2_ids.append(gpt2_id)
+        return torch.tensor(gpt2_ids, dtype=torch.long, device=custom_ids.device)
+
+    def _map_gpt2_to_custom(self, gpt2_id):
+        """Map a GPT-2 token ID back to custom vocab ID (approximate)."""
+        token = self.gpt2_tokenizer.decode([gpt2_id], skip_special_tokens=False)
+        if token in self.custom_vocab.stoi:
+            return self.custom_vocab.stoi[token]
+        # Handle special tokens
+        if gpt2_id == self.gpt2_tokenizer.bos_token_id:
+            return self.custom_vocab.stoi.get("<SOS>", self.custom_vocab.stoi["<UNK>"])
+        elif gpt2_id == self.gpt2_tokenizer.eos_token_id:
+            return self.custom_vocab.stoi.get("<EOS>", self.custom_vocab.stoi["<UNK>"])
+        elif gpt2_id == self.gpt2_tokenizer.pad_token_id:
+            return self.custom_vocab.stoi.get("<PAD>", self.custom_vocab.stoi["<UNK>"])
+        return self.custom_vocab.stoi.get("<UNK>")
+
     def forward(self, features, captions):
-        # Use GPT-2 to generate captions
-        outputs = self.gpt2_model(input_ids=captions[:, :-1], labels=captions[:, 1:])
-        return outputs.logits
+        # captions: (batch_size, seq_len) in custom vocab IDs
+        batch_size = captions.size(0)
+        device = captions.device
+
+        # Map custom caption IDs to GPT-2 IDs
+        gpt2_input_ids = torch.zeros_like(captions, dtype=torch.long, device=device)
+        for b in range(batch_size):
+            gpt2_input_ids[b] = self._map_custom_to_gpt2(captions[b])
+        
+        # Pass through GPT-2 model and get hidden states
+        outputs = self.gpt2_model(input_ids=gpt2_input_ids[:, :-1], output_hidden_states=True, labels=gpt2_input_ids[:, 1:])
+        # Get the last hidden state (shape: batch_size, seq_len-1, hidden_size=768)
+        hidden_states = outputs.hidden_states[-1]  # Last layer hidden states
+        
+        
+        # Map GPT-2 hidden states to custom vocab size using the linear layer
+        custom_logits = self.fc(self.drop(hidden_states))  # (batch_size, seq_len-1, custom_vocab_size)
+        return custom_logits
 
     def generate_caption(self, features, max_len=20, vocab=None):
-        # Use GPT-2 to generate captions
-        input_ids = torch.full((1, 1), vocab.stoi["<SOS>"], dtype=torch.long, device=features.device)
+        device = features.device
+        input_ids = torch.tensor([self.gpt2_tokenizer.bos_token_id], dtype=torch.long, device=device).unsqueeze(0)  # Start with <SOS>
         output_ids = []
+        
         for _ in range(max_len):
             outputs = self.gpt2_model(input_ids=input_ids)
-            logits = outputs.logits[:, -1, :]
-            predicted_id = torch.argmax(logits, dim=-1)
-            output_ids.append(predicted_id.item())
-            if vocab.itos[predicted_id.item()] == "<EOS>":
+            logits = outputs.logits[:, -1, :]  # Logits for the last token
+            # Map logits to custom vocab for consistency with other decoders
+            custom_logits = self.fc(logits)
+            predicted_id = torch.argmax(custom_logits, dim=-1)
+            custom_id = predicted_id.item()
+            output_ids.append(custom_id)
+            
+            if vocab.itos[custom_id] == "<EOS>":
                 break
-            input_ids = torch.cat((input_ids, predicted_id.unsqueeze(0).unsqueeze(0)), dim=1)
+            
+            # Map custom ID back to GPT-2 ID for next input
+            gpt2_id = self.custom_to_gpt2_map.get(custom_id, self.gpt2_tokenizer.unk_token_id)
+            input_ids = torch.cat((input_ids, torch.tensor([[gpt2_id]], dtype=torch.long, device=device)), dim=1)
+        
         return [vocab.itos[idx] for idx in output_ids]
 
 def show_image(inp, title=None):
@@ -685,10 +817,10 @@ def create_run_directory(base_dir, dataset_type, decoder_type, **kwargs):
     
     # Create directory name
     param_str = "_".join(param_parts) if param_parts else "default"
+    encoder_type = kwargs.get('encoder_type', 'resnet')
     run_name = f"{dataset_type}_{decoder_type}_{param_str}_{timestamp}"
     
     # Create the full directory path
-    encoder_type = 'resnet'  # currently always resnet50
     run_dir = os.path.join(base_dir, dataset_type, f"{encoder_type}_{decoder_type}", run_name)
     
     # Create the directory
@@ -1011,7 +1143,7 @@ def calculate_validation_loss(model, data_loader, criterion, vocab_size, device,
     num_val_batches = max(1, int(len(data_loader) * val_fraction))
     
     with torch.no_grad():
-        for i, (image, captions) in enumerate(data_loader):
+        for i, (image, captions) in enumerate(tqdm(data_loader, desc="Calculating Validation Loss")):
             if i >= num_val_batches:
                 break
                 
@@ -1196,6 +1328,7 @@ def main(args):
     
     print(f"Using dataset: {args.dataset_type if hasattr(args, 'dataset_type') else args.dataset}")
     print(f"Decoder type: {args.decoder}")
+    print(f"Encoder type: {args.encoder}")
     print(f"Batch size: {args.batch_size}")
     print(f"Number of workers: {args.num_workers}")
     
@@ -1237,8 +1370,9 @@ def main(args):
                 scheduler = None
             start_epoch = checkpoint['epoch'] + 1
         else:
-            print(f"Initializing model with embed_size={embed_size}, hidden_size={hidden_size}, vocab_size={vocab_size}, num_layers={num_layers}, decoder_type={args.decoder}, attention_dim={attention_dim}, drop_prob={drop_prob}")
-            model = EncoderDecoder(embed_size, hidden_size, vocab_size, num_layers, decoder_type=args.decoder, attention_dim=attention_dim, drop_prob=drop_prob).to(device)
+            print(f"Initializing model with embed_size={embed_size}, hidden_size={hidden_size}, vocab_size={vocab_size}, num_layers={num_layers}, decoder_type={args.decoder}, encoder_type={args.encoder}, attention_dim={attention_dim}, drop_prob={drop_prob}")
+            model = EncoderDecoder(embed_size, hidden_size, vocab_size, custom_vocab=dataset.vocab, num_layers=num_layers, 
+                                   decoder_type=args.decoder, encoder_type=args.encoder, attention_dim=attention_dim, drop_prob=drop_prob).to(device)
             optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
             
             # Create scheduler for new training runs
@@ -1349,6 +1483,8 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
     parser.add_argument('--decoder', type=str, default='lstm', choices=['lstm', 'attention', 'gpt2'], 
                         help='Decoder type: lstm or attention, or gpt2')
+    parser.add_argument('--encoder', type=str, default='resnet', choices=['resnet', 'vit'], 
+                    help='Encoder type: resnet or vit')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training (default: 128)')
     parser.add_argument('--num_workers', type=int, default=16, help='Number of workers for data loading (default: 16)')
     parser.add_argument('--embed_size', type=int, default=512, help='Embedding size')
