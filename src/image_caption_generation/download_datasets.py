@@ -29,7 +29,7 @@ DATASET_LINKS = {
         'description': 'Flickr8k dataset (~8,000 images, ~40,000 captions)'
     },
     'flickr30k': {
-        'url': 'https://drive.google.com/uc?export=download&id=1uh5bZrfT4kbo3gJSWNjgmfc5ztVhJDmI',
+        'url': 'https://drive.google.com/uc?export=download&id=1ZZig44yOKQbGVLqbJNxTekud-wZZs0VR',
         'filename': 'flickr30k.zip',
         'size_mb': 4500,
         'description': 'Flickr30k dataset (~31,000 images, ~155,000 captions)'
