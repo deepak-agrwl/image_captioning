@@ -10,14 +10,15 @@ import io
 # -----------------------------
 @st.cache_resource
 def load_model():
-    model = VisionEncoderDecoderModel.from_pretrained("vit-gpt2-captioning")  # Replace with your own path if local
-    processor = ViTImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    model = VisionEncoderDecoderModel.from_pretrained("nlpconnect/vit-gpt2-image-captioning")
+    processor = ViTImageProcessor.from_pretrained("nlpconnect/vit-gpt2-image-captioning")
+    tokenizer = AutoTokenizer.from_pretrained("nlpconnect/vit-gpt2-image-captioning")
     return model, processor, tokenizer
 
 model, processor, tokenizer = load_model()
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
+
 
 # -----------------------------
 # 🔄 Image preprocessing
@@ -30,10 +31,26 @@ def preprocess_image(image: Image.Image):
 # -----------------------------
 # 🧠 Generate caption
 # -----------------------------
-def generate_caption(image_tensor):
-    output_ids = model.generate(image_tensor, max_length=50, num_beams=4)
+
+def generate_caption(image, model, processor, tokenizer):
+    if image.mode != "RGB":
+        image = image.convert(mode="RGB")
+
+    pixel_values = processor(images=image, return_tensors="pt").pixel_values
+
+    # Use greedy decoding or sampling (avoid beam search for GPT2)
+    output_ids = model.generate(
+        pixel_values,
+        max_length=50,
+        do_sample=True,       # optional for sampling
+        top_k=50,
+        top_p=0.95,
+        num_return_sequences=1
+    )
+
     caption = tokenizer.decode(output_ids[0], skip_special_tokens=True)
     return caption
+
 
 # -----------------------------
 # 🖼️ Streamlit UI
@@ -49,6 +66,7 @@ if uploaded_file is not None:
 
     with st.spinner("Generating caption..."):
         image_tensor = preprocess_image(image)
-        caption = generate_caption(image_tensor)
+        cmodel, processor, tokenizer = load_model()
+        caption = generate_caption(image, model, processor, tokenizer)
         st.success("Caption generated!")
         st.markdown(f"**📝 Caption:** _{caption}_")
