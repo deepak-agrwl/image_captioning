@@ -94,6 +94,24 @@ python flickr_image_caption_with_pytorch_resnet_lstm.py \
     --min_lr 1e-6 
 ```
 
+### 7. Train with Flickr30k + ViT encoder + Gpt2 decoder + Cosine LR Scheduling [fine tuned]
+```bash
+python flickr_image_caption_with_pytorch_resnet_lstm.py \
+    --dataset_type flickr30k \
+    --decoder gpt2 \
+    --encoder vit \
+    --epochs 30 \
+    --batch_size 128 \
+    --embed_size 1024 \
+    --hidden_size 2048 \
+    --learning_rate 0.00005 \
+    --drop_prob 0.1 \
+    --use_scheduler \
+    --scheduler_type cosine \
+    --scheduler_t_max 20 \
+    --min_lr 1e-6 
+```
+
 ## 📋 Overview
 
 The model architecture consists of:

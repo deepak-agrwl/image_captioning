@@ -208,7 +208,7 @@ class EncoderCNN(nn.Module):
 
 class EncoderViT(nn.Module):
     """Vision Transformer encoder for image feature extraction."""
-    def __init__(self, embed_size, model_name='google/vit-base-patch16-224'):
+    def __init__(self, embed_size, model_name='openai/clip-vit-base-patch32'):
         super(EncoderViT, self).__init__()
         # Load pre-trained ViT model and feature extractor
         self.vit = ViTModel.from_pretrained(model_name)
@@ -224,7 +224,6 @@ class EncoderViT(nn.Module):
     def forward(self, images):
         # images: (batch_size, channels, height, width)
         # ViT expects pixel values in a specific format, so we'll handle preprocessing
-        batch_size = images.size(0)
         device = images.device
         
         # Convert images to format expected by ViT (using feature extractor if needed)
