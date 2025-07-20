@@ -1,0 +1,27 @@
+torch>=1.13.1
+torchvision>=0.14.1
+transformers>=4.36.2
+accelerate>=0.26.0
+
+# Vision and Image Processing
+Pillow
+timm
+opencv-python
+
+# Tokenization, Evaluation, and Metrics
+nltk
+rouge_score
+jiwer
+evaluate
+
+# Data Handling
+pandas
+numpy
+
+# Visualization
+matplotlib
+tqdm
+
+# System
+scikit-learn
+pandas
