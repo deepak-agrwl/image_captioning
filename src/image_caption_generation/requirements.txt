@@ -17,6 +17,7 @@ torchaudio
 # Data processing and analysis
 pandas
 numpy
+scikit-learn
 
 # Image processing
 Pillow

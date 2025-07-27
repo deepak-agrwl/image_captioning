@@ -878,7 +878,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=2, learning_rate
         print(f"  BLEU: {metrics['bleu']:.4f}  WER: {metrics['wer']:.4f}  ROUGE: {metrics['rouge']:.4f}")
 
         is_best = val_loss == min(validation_losses) if len(validation_losses) > 0 else False
-        save_model_checkpoint(model, optimizer, scheduler, epoch, avg_epoch_loss, val_loss, metrics, model_save_dir, vocab_size, decoder_type, dataset, best_loss=min(validation_losses) if validation_losses else None, is_best=is_best)
+        save_model_checkpoint(model, optimizer, scheduler, epoch, avg_epoch_loss, val_loss, metrics, model_save_dir, vocab_size, decoder_type, dataset, encoder_type=encoder_type, best_loss=min(validation_losses) if validation_losses else None, is_best=is_best)
         print(f"  Model checkpoint saved (best: {is_best})")
 
         save_loss_curves(epochs_list, training_losses, validation_losses, model_save_dir)

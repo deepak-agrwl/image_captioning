@@ -69,7 +69,7 @@ DATASET_CONFIGS = {
 DEFAULT_DATASET = 'flickr30k'
 
 # Paths will be set via argparse
-PRETRAINED_RESNET_MODEL_PATH = None
+PRETRAINED_RESNET_MODEL_PATH = '../../resources/models/resnet50-19c8e357.pth'
 MODEL_SAVE_DIR = None
 
 # Load spaCy model
@@ -783,7 +783,7 @@ def log_lr_change(epoch, optimizer, scheduler_type, val_loss=None):
         print(f"Epoch {epoch}: Learning Rate = {current_lr:.6f}")
 
 
-def create_run_directory(base_dir, dataset_type, decoder_type, **kwargs):
+def create_run_directory(base_dir, dataset_type, decoder_type, encoder_type, **kwargs):
     """
     Create a unique directory for each training run with timestamp and parameter summary.
     
@@ -820,8 +820,7 @@ def create_run_directory(base_dir, dataset_type, decoder_type, **kwargs):
     
     # Create directory name
     param_str = "_".join(param_parts) if param_parts else "default"
-    encoder_type = kwargs.get('encoder_type', 'resnet')
-    run_name = f"{dataset_type}_{decoder_type}_{param_str}_{timestamp}"
+    run_name = f"{dataset_type}_{encoder_type}_{decoder_type}_{param_str}_{timestamp}"
     
     # Create the full directory path
     run_dir = os.path.join(base_dir, dataset_type, f"{encoder_type}_{decoder_type}", run_name)
@@ -832,6 +831,7 @@ def create_run_directory(base_dir, dataset_type, decoder_type, **kwargs):
     # Save all parameters to a JSON file
     config = {
         'dataset_type': dataset_type,
+        'encoder_type': encoder_type,
         'decoder_type': decoder_type,
         'timestamp': timestamp,
         'run_name': run_name,
@@ -851,9 +851,10 @@ def create_run_directory(base_dir, dataset_type, decoder_type, **kwargs):
         f.write(f"Timestamp: {timestamp}\n\n")
         f.write(f"Dataset: {dataset_type}\n")
         f.write(f"Decoder: {decoder_type}\n")
+        f.write(f"Encoder: {encoder_type}\n")
         
         for key, value in kwargs.items():
-            if key not in ['dataset_type', 'decoder_type']:
+            if key not in ['dataset_type', 'decoder_type', 'encoder_type']:
                 f.write(f"{key}: {value}\n")
         
         f.write(f"\nFull configuration saved to: run_config.json\n")
@@ -912,7 +913,7 @@ def eval_intermediate_model_dur_train(epoch, model, data_loader, dataset, device
 
     model.train()
 
-def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rate=0.0001, print_every=2000, dataset_type='flickr8k', val_fraction=0.2, decoder_type='lstm', start_epoch=1, optimizer=None, scheduler=None):
+def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rate=0.0001, print_every=2000, dataset_type='flickr8k', val_fraction=0.2, decoder_type='lstm', start_epoch=1, optimizer=None, scheduler=None, encoder_type='resnet'):
     """Train the model with model saving and loss tracking, and visualize loss after each epoch."""
     criterion = nn.CrossEntropyLoss(ignore_index=dataset.vocab.stoi["<PAD>"])
     if optimizer is None:
@@ -920,7 +921,6 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
     vocab_size = len(dataset.vocab)
     
     # Create model save directory with dataset type
-    encoder_type = 'resnet'  # currently always resnet50
     model_save_dir = os.path.join(MODEL_SAVE_DIR, dataset_type, f"{encoder_type}_{decoder_type}")
     os.makedirs(model_save_dir, exist_ok=True)
     
@@ -1019,7 +1019,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
             
             batch_time = time.time() - batch_start_time
             batch_times.append(batch_time)
-            # if (i > 10): break
+            #if (i > 10): break
           
         avg_epoch_loss = epoch_loss / len(train_loader)
         epoch_time = time.time() - epoch_start_time
@@ -1092,7 +1092,9 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
 
         # Save model and best model
         is_best = val_loss == min(validation_losses) if len(validation_losses) > 0 else False
-        save_model_checkpoint(model, optimizer, scheduler, epoch, avg_epoch_loss, val_loss, metrics, model_save_dir, vocab_size, decoder_type, dataset, best_loss=min(validation_losses) if validation_losses else None, is_best=is_best)
+        save_model_checkpoint(model, optimizer, scheduler, epoch, avg_epoch_loss, val_loss, metrics, model_save_dir,
+                              vocab_size, decoder_type, dataset, encoder_type=encoder_type,
+                              best_loss=min(validation_losses) if validation_losses else None, is_best=is_best)
         print(f"  Model checkpoint saved (best: {is_best})")
 
         # Save loss curves and metrics history after each epoch
@@ -1246,8 +1248,10 @@ def load_trained_model(model_path, device):
         hidden_size=hyperparams['hidden_size'],
         vocab_size=hyperparams['vocab_size'],
         num_layers=hyperparams['num_layers'],
+        encoder_type=hyperparams.get('encoder_type', 'resnet'),
         decoder_type=hyperparams.get('decoder_type', 'lstm'),
-        attention_dim=hyperparams.get('attention_dim', 256)
+        attention_dim=hyperparams.get('attention_dim', 256),
+        custom_vocab=checkpoint['vocab']
     ).to(device)
     
     # Load model state
@@ -1328,6 +1332,8 @@ def main(args):
     # Verify model will be on correct device
     if device.type == 'cuda':
         print(f"Model will be trained on GPU: {torch.cuda.get_device_name()}")
+    elif device.type == 'mps':
+        print("Model will be trained on Apple Silicon GPU (MPS).")
     else:
         print("WARNING: Model will be trained on CPU - this will be very slow!")
     
@@ -1429,7 +1435,7 @@ def main(args):
             'advanced_attention_viz': args.advanced_attention_viz
         }
         # Create a unique run directory for this training run
-        run_dir = create_run_directory(MODEL_SAVE_DIR, args.dataset_type if hasattr(args, 'dataset_type') else args.dataset, args.decoder, **run_params)
+        run_dir = create_run_directory(MODEL_SAVE_DIR, args.dataset_type if hasattr(args, 'dataset_type') else args.dataset, args.decoder, args.encoder, **run_params)
         
         # Override MODEL_SAVE_DIR for this run
         original_model_save_dir = MODEL_SAVE_DIR
@@ -1445,7 +1451,8 @@ def main(args):
             start_epoch=start_epoch, 
             optimizer=optimizer, 
             scheduler=scheduler, 
-            decoder_type=args.decoder
+            decoder_type=args.decoder,
+            encoder_type=args.encoder
         )
         
         # Restore original MODEL_SAVE_DIR

@@ -3,7 +3,7 @@ import torch
 import matplotlib.pyplot as plt
 
 
-def save_model_checkpoint(model, optimizer, scheduler, epoch, avg_epoch_loss, val_loss, metrics, model_save_dir, vocab_size, decoder_type, dataset, best_loss=None, is_best=False):
+def save_model_checkpoint(model, optimizer, scheduler, epoch, avg_epoch_loss, val_loss, metrics, model_save_dir, vocab_size, decoder_type, dataset, best_loss=None, encoder_type=None, is_best=False):
     """Save model and training state after each epoch. Optionally save best model."""
     checkpoint = {
         'model_state_dict': model.state_dict(),
@@ -19,7 +19,8 @@ def save_model_checkpoint(model, optimizer, scheduler, epoch, avg_epoch_loss, va
             'hidden_size': model.decoder.hidden_size if hasattr(model.decoder, 'hidden_size') else None,
             'vocab_size': vocab_size,
             'num_layers': model.decoder.num_layers,
-            'decoder_type': decoder_type
+            'decoder_type': decoder_type,
+            'encoder_type': encoder_type,
         }
     }
     filename = os.path.join(model_save_dir, f"model_epoch{epoch}.pth")

@@ -1,0 +1,30 @@
+1. Phase 1: Search the Image and text repository based on either text or image. 
+    Models:
+        1. Pre-Trained CLIP model
+        2. ResNet50 + DistilBERT
+        3. ViT + Transformer - Not done.
+    Metrics: 
+        Cosine Similarity - didnt compute overall cosine similarity score for the model, based on validation set
+    Expected Results:
+        3 > 2 > 1 - in decreasing order of metrics values.
+        Results for training on 30K dataset should be better than the one on 8k dataset.
+2. Phase 2: Generate Text from Image. 
+    Models:
+        1. Resnet50 + LSTM
+        2. Resnet50 + LSTM with attention - attention mechanism wasnt added correctly
+        3. ViT + GPT2 - dont know
+        4. ViT + GPT2 with Beam Search - dont know
+    Metrics:
+        Cosine Similarity - didnt compute this metrics.
+        BLEU-4
+    Expected Results:
+        4 > 3 > 2 > 1 - in decreasing order of metrics values
+        Results only on 30K. No need for 8K results
+3. Phase 3: Setup Streamlit App to try the trained models for generating caption per Image
+    Remaining items:
+        Items to pick from script: load_trained_model, test_model, model definition
+        Best model file
+        Update app and app_SFModel.py to use the best model
+    Expected Results:
+        App should be able to generate caption per image.
+        Functionality to try out any model, basically a selection of model to try out.
