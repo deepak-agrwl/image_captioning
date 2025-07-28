@@ -1139,7 +1139,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
             
             batch_time = time.time() - batch_start_time
             batch_times.append(batch_time)
-            if (i > 10): break
+            # if (i > 10): break
           
         avg_epoch_loss = epoch_loss / len(train_loader)
         epoch_time = time.time() - epoch_start_time
@@ -1281,7 +1281,7 @@ def calculate_validation_loss(model, data_loader, criterion, vocab_size, device,
             loss = criterion(outputs.reshape(-1, vocab_size), captions[:, 1:].reshape(-1))
             total_val_loss += loss.item()
             val_batches += 1
-            if(i >= 1): break  # Limit to first few batches for speed
+            # if(i >= 1): break  # Limit to first few batches for speed
     
     model.train()
     return total_val_loss / val_batches if val_batches > 0 else float('inf')
