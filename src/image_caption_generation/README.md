@@ -100,8 +100,9 @@ python flickr_image_caption_with_pytorch_resnet_lstm.py \
     --dataset_type flickr30k \
     --decoder gpt2 \
     --encoder vit \
+    --num_workers 8 \
     --epochs 30 \
-    --batch_size 64 \
+    --batch_size 128 \
     --learning_rate 0.00005 \
     --use_scheduler \
     --scheduler_type cosine \

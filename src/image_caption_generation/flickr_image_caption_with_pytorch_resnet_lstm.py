@@ -1033,6 +1033,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
     # Memory optimization
     torch.cuda.empty_cache()
     torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
 
     """Train the model with model saving and loss tracking, and visualize loss after each epoch."""
     criterion = nn.CrossEntropyLoss(ignore_index=dataset.vocab.stoi["<PAD>"])
