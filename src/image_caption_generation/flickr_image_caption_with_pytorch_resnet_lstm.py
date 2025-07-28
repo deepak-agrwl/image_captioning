@@ -426,6 +426,10 @@ class GPT2Decoder(nn.Module):
 
         # Create a mapping from custom vocab to GPT-2 vocab (approximate)
         self.custom_to_gpt2_map = self._create_vocab_mapping()
+        
+		# Initialize image projection in __init__ (assumes embed_size is known)
+        self.image_projection = nn.Linear(embed_size, self.gpt2_model.config.n_embd)  # embed_size from args/encoder
+
 
     def _create_vocab_mapping(self):
         """Create an approximate mapping from custom vocab to GPT-2 vocab."""
@@ -476,7 +480,14 @@ class GPT2Decoder(nn.Module):
         return self.custom_vocab.stoi.get("<UNK>")
 
     def forward(self, features, captions):
-        # captions: (batch_size, seq_len) in custom vocab IDs
+        """
+        Integrate image features as a prefix embedding to GPT-2 input.
+        Args:
+            features: (batch_size, feature_dim) from encoder (project to n_embd)
+            captions: (batch_size, seq_len) in custom vocab IDs
+        Returns:
+            custom_logits: (batch_size, seq_len, custom_vocab_size)
+        """
         batch_size = captions.size(0)
         device = captions.device
 
@@ -484,39 +495,59 @@ class GPT2Decoder(nn.Module):
         gpt2_input_ids = torch.zeros_like(captions, dtype=torch.long, device=device)
         for b in range(batch_size):
             gpt2_input_ids[b] = self._map_custom_to_gpt2(captions[b])
+
+        # ------ IMAGE FEATURE INTEGRATION ------
+        # 1. Use the pre-initialized projection (no dynamic check needed)
+        img_embeds = self.image_projection(features)  # (batch_size, n_embd)
+        img_embeds = img_embeds.unsqueeze(1)    # (batch_size, 1, n_embd)
+        print(f"Image embeddingd shape: {img_embeds.shape}")
         
-        # Pass through GPT-2 model and get hidden states
-        outputs = self.gpt2_model(input_ids=gpt2_input_ids[:, :-1], output_hidden_states=True, labels=gpt2_input_ids[:, 1:])
-        # Get the last hidden state (shape: batch_size, seq_len-1, hidden_size=768)
-        hidden_states = outputs.hidden_states[-1]  # Last layer hidden states
-        
-        
-        # Map GPT-2 hidden states to custom vocab size using the linear layer
-        custom_logits = self.fc(self.drop(hidden_states))  # (batch_size, seq_len-1, custom_vocab_size)
+        # 2. Get GPT-2 token embeddings (excluding <SOS> so we will "replace" with image)
+        # We'll use all tokens except the last so targets are shifted right
+        input_token_ids = gpt2_input_ids[:, :-1]         # (batch_size, seq_len - 1)
+        token_embeds = self.gpt2_model.transformer.wte(input_token_ids)  # (batch_size, seq_len-1, n_embd)
+
+        # 3. Concatenate the image embedding as prefix to the input token embeddings
+        inputs_embeds = torch.cat([img_embeds, token_embeds], dim=1)  # (batch, seq_len, n_embd)
+
+        # 4. Targets/labels should be the GPT-2 tokens (excluding <SOS>), i.e. gpt2_input_ids (entire sequence) except first token
+        labels = gpt2_input_ids
+
+        # 5. Run GPT-2 model using inputs_embeds (not input_ids)
+        outputs = self.gpt2_model(inputs_embeds=inputs_embeds, labels=labels, output_hidden_states=True)
+        # The output logits are aligned to the labels (batch, seq_len, vocab_size)
+
+        # 6. Get last hidden state for linear layer
+        hidden_states = outputs.hidden_states[-1]  # (batch_size, seq_len, n_embd)
+
+        # 7. Map to custom vocab size
+        custom_logits = self.fc(self.drop(hidden_states))  # (batch_size, seq_len, custom_vocab_size)
         return custom_logits
 
     def generate_caption(self, features, max_len=20, vocab=None):
         device = features.device
-        input_ids = torch.tensor([self.gpt2_tokenizer.bos_token_id if self.gpt2_tokenizer.bos_token_id is not None else self.gpt2_tokenizer.eos_token_id], 
-                                 dtype=torch.long, device=device).unsqueeze(0)  # Start with <SOS>
+		# Project image features (using the renamed layer)
+        img_embeds = self.image_projection(features).unsqueeze(1)  # (1, 1, n_embd) assuming batch_size=1
+		
+		# Start with image as prefix (no explicit BOS)
+        inputs_embeds = img_embeds
         output_ids = []
         
         for _ in range(max_len):
-            outputs = self.gpt2_model(input_ids=input_ids, output_hidden_states=True)
+            outputs = self.gpt2_model(inputs_embeds=inputs_embeds, output_hidden_states=True)
             hidden_states = outputs.hidden_states[-1][:, -1, :]  # Last token's hidden state (batch_size, hidden_size=768)
             custom_logits = self.fc(self.drop(hidden_states))  # Map to custom vocab (batch_size, custom_vocab_size)
-            predicted_id = torch.argmax(custom_logits, dim=-1)
-            custom_id = predicted_id.item()
-            output_ids.append(custom_id)
+            predicted_id = torch.argmax(custom_logits, dim=-1).item()
+            output_ids.append(predicted_id)
             
-            if vocab.itos[custom_id] == "<EOS>":
+            if vocab.itos[predicted_id] == "<EOS>":
                 break
             
             # Map custom ID back to GPT-2 ID for next input
-            gpt2_id = self.custom_to_gpt2_map.get(custom_id, 
-                                                  self.gpt2_tokenizer.unk_token_id if self.gpt2_tokenizer.unk_token_id is not None else 50256)
-            input_ids = torch.cat((input_ids, torch.tensor([[gpt2_id]], dtype=torch.long, device=device)), dim=1)
-        
+            gpt2_id = self.custom_to_gpt2_map.get(predicted_id, self.gpt2_tokenizer.unk_token_id)
+            next_embed = self.gpt2_model.transformer.wte(torch.tensor([[gpt2_id]], device=device))
+            inputs_embeds = torch.cat((inputs_embeds, next_embed), dim=1)
+    
         return [vocab.itos[idx] for idx in output_ids]
 
 def show_image(inp, title=None):
@@ -1537,4 +1568,3 @@ if __name__ == "__main__":
 
     # Pass parsed args to main
     main(args)
-
