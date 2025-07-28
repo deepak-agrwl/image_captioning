@@ -101,11 +101,8 @@ python flickr_image_caption_with_pytorch_resnet_lstm.py \
     --decoder gpt2 \
     --encoder vit \
     --epochs 30 \
-    --batch_size 128 \
-    --embed_size 1024 \
-    --hidden_size 2048 \
+    --batch_size 64 \
     --learning_rate 0.00005 \
-    --drop_prob 0.1 \
     --use_scheduler \
     --scheduler_type cosine \
     --scheduler_t_max 20 \

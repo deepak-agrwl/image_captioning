@@ -1011,6 +1011,10 @@ def eval_intermediate_model_dur_train(epoch, model, data_loader, dataset, device
     model.train()
 
 def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rate=0.0001, print_every=2000, dataset_type='flickr8k', val_fraction=0.2, decoder_type='lstm', start_epoch=1, optimizer=None, scheduler=None, encoder_type='resnet'):
+    # Memory optimization
+    torch.cuda.empty_cache()
+    torch.backends.cudnn.benchmark = True
+    
     """Train the model with model saving and loss tracking, and visualize loss after each epoch."""
     criterion = nn.CrossEntropyLoss(ignore_index=dataset.vocab.stoi["<PAD>"])
     if optimizer is None:
