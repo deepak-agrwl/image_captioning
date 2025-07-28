@@ -33,6 +33,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, random_split
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 from transformers import ViTModel, ViTFeatureExtractor
+from transformers import BlipProcessor, BlipForConditionalGeneration
 from tqdm import tqdm
 import json
 import time
@@ -388,8 +389,11 @@ class EncoderDecoder(nn.Module):
                                                    attention_dim=attention_dim, num_layers=num_layers, 
                                                    drop_prob=drop_prob)
         elif decoder_type == 'gpt2':
-            self.decoder = GPT2Decoder(vocab_size, embed_size, hidden_size, custom_vocab, num_layers=num_layers, 
-                                       drop_prob=drop_prob)
+            self.decoder = GPT2Decoder(vocab_size, embed_size=512, hidden_size=768, custom_vocab=custom_vocab, drop_prob=0.3)
+        elif decoder_type == 'blip':
+            self.decoder = BLIPDecoder(vocab_size, embed_size, hidden_size, 
+                                    custom_vocab=custom_vocab, num_layers=num_layers, 
+                                    drop_prob=drop_prob)
         else:
             self.decoder = DecoderRNN(embed_size, hidden_size, vocab_size, num_layers, drop_prob)
 
@@ -398,6 +402,72 @@ class EncoderDecoder(nn.Module):
         outputs = self.decoder(features, captions)
         return outputs
 
+class BLIPDecoder(nn.Module):
+    """BLIP-based decoder for image captioning."""
+    
+    def __init__(self, vocab_size, embed_size, hidden_size, custom_vocab, num_layers=1, drop_prob=0.3):
+        super(BLIPDecoder, self).__init__()
+        
+        # Load pre-trained BLIP model and processor
+        self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        self.model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        
+        # Freeze BLIP parameters
+        for param in self.model.parameters():
+            param.requires_grad = False
+            
+        # Custom layers for vocabulary mapping
+        self.custom_vocab = custom_vocab
+        self.custom_vocab_size = vocab_size
+        self.output_projection = nn.Linear(self.model.config.hidden_size, vocab_size)
+        self.drop = nn.Dropout(drop_prob)
+        
+        # For compatibility
+        self.num_layers = num_layers
+        
+    def forward(self, features, captions):
+        # Process input features
+        pixel_values = features.unsqueeze(-1).unsqueeze(-1)  # Adjust dimensions for BLIP
+        
+        # Generate BLIP embeddings
+        outputs = self.model(
+            pixel_values=pixel_values,
+            decoder_input_ids=captions[:, :-1],
+            output_hidden_states=True
+        )
+        
+        # Project to custom vocabulary
+        hidden_states = outputs.decoder_hidden_states[-1]
+        logits = self.output_projection(self.drop(hidden_states))
+        
+        return logits
+        
+    def generate_caption(self, features, max_len=20, vocab=None):
+        with torch.no_grad():
+            # Process input features
+            pixel_values = features.unsqueeze(-1).unsqueeze(-1)
+            
+            # Generate caption using BLIP
+            outputs = self.model.generate(
+                pixel_values=pixel_values,
+                max_length=max_len,
+                num_beams=5,
+                early_stopping=True
+            )
+            
+            # Decode and map to custom vocabulary
+            generated_text = self.processor.decode(outputs[0], skip_special_tokens=True)
+            tokens = generated_text.split()
+            
+            # Map to custom vocabulary tokens
+            caption_ids = []
+            for token in tokens:
+                if token in vocab.stoi:
+                    caption_ids.append(vocab.stoi[token])
+                else:
+                    caption_ids.append(vocab.stoi["<UNK>"])
+                    
+            return [vocab.itos[idx] for idx in caption_ids]
 class GPT2Decoder(nn.Module):
     def __init__(self, vocab_size, embed_size, hidden_size, custom_vocab, num_layers=1, drop_prob=0.3):
         super(GPT2Decoder, self).__init__()
@@ -407,17 +477,18 @@ class GPT2Decoder(nn.Module):
 
         # Set default special tokens if not defined
         if self.gpt2_tokenizer.pad_token_id is None:
-            self.gpt2_tokenizer.pad_token = self.gpt2_tokenizer.eos_token  # Use EOS as PAD if PAD is not defined
+            self.gpt2_tokenizer.pad_token = self.gpt2_tokenizer.eos_token
         if self.gpt2_tokenizer.bos_token_id is None:
-            self.gpt2_tokenizer.bos_token = self.gpt2_tokenizer.convert_tokens_to_ids("<|endoftext|>")  # Fallback for SOS
+            self.gpt2_tokenizer.bos_token = self.gpt2_tokenizer.convert_tokens_to_ids("<|endoftext|>") 
         if self.gpt2_tokenizer.eos_token_id is None:
-            self.gpt2_tokenizer.eos_token = self.gpt2_tokenizer.convert_tokens_to_ids("<|endoftext|>")  # Fallback for EOS
+            self.gpt2_tokenizer.eos_token = self.gpt2_tokenizer.convert_tokens_to_ids("<|endoftext|>") 
         
         # Store custom vocabulary for mapping back to dataset tokens
         self.custom_vocab = custom_vocab
         self.custom_vocab_size = vocab_size
 
         # Linear layer to map GPT-2 hidden states to custom vocab size (for output)
+        self.image_projection = nn.Linear(embed_size, self.gpt2_model.config.n_embd)
         self.fc = nn.Linear(self.gpt2_model.config.n_embd, vocab_size)
         self.drop = nn.Dropout(drop_prob)
 
@@ -426,9 +497,6 @@ class GPT2Decoder(nn.Module):
 
         # Create a mapping from custom vocab to GPT-2 vocab (approximate)
         self.custom_to_gpt2_map = self._create_vocab_mapping()
-        
-		# Initialize image projection in __init__ (assumes embed_size is known)
-        self.image_projection = nn.Linear(embed_size, self.gpt2_model.config.n_embd)  # embed_size from args/encoder
 
 
     def _create_vocab_mapping(self):
@@ -480,70 +548,68 @@ class GPT2Decoder(nn.Module):
         return self.custom_vocab.stoi.get("<UNK>")
 
     def forward(self, features, captions):
-        """
-        Integrate image features as a prefix embedding to GPT-2 input.
+        """Forward pass integrating image features with text generation.
+        
         Args:
-            features: (batch_size, feature_dim) from encoder (project to n_embd)
-            captions: (batch_size, seq_len) in custom vocab IDs
+            features (torch.Tensor): Image features from encoder [batch_size, feature_dim]
+            captions (torch.Tensor): Ground truth captions [batch_size, seq_len]
+            
         Returns:
-            custom_logits: (batch_size, seq_len, custom_vocab_size)
+            torch.Tensor: Logits over custom vocabulary [batch_size, seq_len, vocab_size]
         """
         batch_size = captions.size(0)
         device = captions.device
+
+        # Project and prepare image features
+        img_embeds = self.image_projection(features).unsqueeze(1)
 
         # Map custom caption IDs to GPT-2 IDs
         gpt2_input_ids = torch.zeros_like(captions, dtype=torch.long, device=device)
         for b in range(batch_size):
             gpt2_input_ids[b] = self._map_custom_to_gpt2(captions[b])
 
-        # ------ IMAGE FEATURE INTEGRATION ------
-        # 1. Use the pre-initialized projection (no dynamic check needed)
-        img_embeds = self.image_projection(features)  # (batch_size, n_embd)
-        img_embeds = img_embeds.unsqueeze(1)    # (batch_size, 1, n_embd)
-        print(f"Image embeddingd shape: {img_embeds.shape}")
+        # Get token embeddings (excluding last token)
+        input_embeds = self.gpt2_model.transformer.wte(gpt2_input_ids[:, :-1])
         
-        # 2. Get GPT-2 token embeddings (excluding <SOS> so we will "replace" with image)
-        # We'll use all tokens except the last so targets are shifted right
-        input_token_ids = gpt2_input_ids[:, :-1]         # (batch_size, seq_len - 1)
-        token_embeds = self.gpt2_model.transformer.wte(input_token_ids)  # (batch_size, seq_len-1, n_embd)
+        # Concatenate image embeddings as prefix
+        inputs_embeds = torch.cat([img_embeds, input_embeds], dim=1)
 
-        # 3. Concatenate the image embedding as prefix to the input token embeddings
-        inputs_embeds = torch.cat([img_embeds, token_embeds], dim=1)  # (batch, seq_len, n_embd)
+        # Run GPT-2 model
+        outputs = self.gpt2_model(inputs_embeds=inputs_embeds,
+                                labels=gpt2_input_ids,
+                                output_hidden_states=True)
 
-        # 4. Targets/labels should be the GPT-2 tokens (excluding <SOS>), i.e. gpt2_input_ids (entire sequence) except first token
-        labels = gpt2_input_ids
+        # Project to custom vocabulary
+        hidden_states = outputs.hidden_states[-1]
+        logits = self.output_projection(self.drop(hidden_states))
 
-        # 5. Run GPT-2 model using inputs_embeds (not input_ids)
-        outputs = self.gpt2_model(inputs_embeds=inputs_embeds, labels=labels, output_hidden_states=True)
-        # The output logits are aligned to the labels (batch, seq_len, vocab_size)
-
-        # 6. Get last hidden state for linear layer
-        hidden_states = outputs.hidden_states[-1]  # (batch_size, seq_len, n_embd)
-
-        # 7. Map to custom vocab size
-        custom_logits = self.fc(self.drop(hidden_states))  # (batch_size, seq_len, custom_vocab_size)
-        return custom_logits
+        return logits
 
     def generate_caption(self, features, max_len=20, vocab=None):
         device = features.device
-		# Project image features (using the renamed layer)
-        img_embeds = self.image_projection(features).unsqueeze(1)  # (1, 1, n_embd) assuming batch_size=1
-		
-		# Start with image as prefix (no explicit BOS)
+
+		# Project and prepare image features as initial input
+        img_embeds = self.image_projection(features).unsqueeze(1)
         inputs_embeds = img_embeds
+        
         output_ids = []
         
+        # Generate tokens one at a time
         for _ in range(max_len):
             outputs = self.gpt2_model(inputs_embeds=inputs_embeds, output_hidden_states=True)
-            hidden_states = outputs.hidden_states[-1][:, -1, :]  # Last token's hidden state (batch_size, hidden_size=768)
-            custom_logits = self.fc(self.drop(hidden_states))  # Map to custom vocab (batch_size, custom_vocab_size)
-            predicted_id = torch.argmax(custom_logits, dim=-1).item()
+
+            # Get prediction for next token
+            hidden_state = outputs.hidden_states[-1][:, -1, :]
+            logits = self.output_projection(self.drop(hidden_state))
+            predicted_id = torch.argmax(logits, dim=-1).item()
+
             output_ids.append(predicted_id)
             
+            # Stop if EOS token is generated
             if vocab.itos[predicted_id] == "<EOS>":
                 break
             
-            # Map custom ID back to GPT-2 ID for next input
+            # Prepare embedding for next token
             gpt2_id = self.custom_to_gpt2_map.get(predicted_id, self.gpt2_tokenizer.unk_token_id)
             next_embed = self.gpt2_model.transformer.wte(torch.tensor([[gpt2_id]], device=device))
             inputs_embeds = torch.cat((inputs_embeds, next_embed), dim=1)
