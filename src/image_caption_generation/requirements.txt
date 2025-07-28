@@ -8,7 +8,7 @@ albumentations
 matplotlib
 tqdm>=4.60.0
 opencv-python
-salesforce-lavis
+# salesforce-lavis
 
 # PyTorch ecosystem (required for deep learning)
 torch
