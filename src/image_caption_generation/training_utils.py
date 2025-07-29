@@ -25,9 +25,20 @@ def save_model_checkpoint(model, optimizer, scheduler, epoch, avg_epoch_loss, va
     }
     filename = os.path.join(model_save_dir, f"model_epoch{epoch}.pth")
     torch.save(checkpoint, filename)
+    print(f"Saved new checkpoint: {filename}")
     if is_best:
         best_filename = os.path.join(model_save_dir, "best_model.pth")
         torch.save(checkpoint, best_filename)
+    
+    # Delete previous checkpoints
+    for old_file in os.listdir(model_save_dir):
+        if old_file.startswith('model_epoch') and old_file.endswith('.pth'):
+            old_file_path = os.path.join(model_save_dir, old_file)
+            try:
+                os.remove(old_file_path)
+                print(f"Deleted previous checkpoint: {old_file}")
+            except Exception as e:
+                print(f"Error deleting {old_file}: {e}")
 
 
 def save_loss_curves(epochs_list, training_losses, validation_losses, model_save_dir):
