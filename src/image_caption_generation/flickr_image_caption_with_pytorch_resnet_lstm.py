@@ -402,78 +402,78 @@ class EncoderDecoder(nn.Module):
         outputs = self.decoder(features, captions)
         return outputs
 
-# class BLIPDecoder(nn.Module):
-#     """BLIP-based decoder for image captioning."""
+class BLIPDecoder(nn.Module):
+    """BLIP-based decoder for image captioning."""
     
-#     def __init__(self, vocab_size, embed_size, hidden_size, custom_vocab, num_layers=1, drop_prob=0.3):
-#         super(BLIPDecoder, self).__init__()
+    def __init__(self, vocab_size, embed_size, hidden_size, custom_vocab, num_layers=1, drop_prob=0.3):
+        super(BLIPDecoder, self).__init__()
         
-#         # Load pre-trained BLIP model and processor
-#         self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-#         self.model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        # Load pre-trained BLIP model and processor
+        self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        self.model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
         
-#         # Freeze BLIP parameters
-#         for param in self.model.parameters():
-#             param.requires_grad = False
+        # Freeze BLIP parameters
+        for param in self.model.parameters():
+            param.requires_grad = False
             
-#         # Custom layers for vocabulary mapping
-#         self.custom_vocab = custom_vocab
-#         self.custom_vocab_size = vocab_size
-#         self.output_projection = nn.Linear(self.model.config.hidden_size, vocab_size)
-#         self.drop = nn.Dropout(drop_prob)
+        # Custom layers for vocabulary mapping
+        self.custom_vocab = custom_vocab
+        self.custom_vocab_size = vocab_size
+        self.output_projection = nn.Linear(self.model.config.hidden_size, vocab_size)
+        self.drop = nn.Dropout(drop_prob)
         
-#         # For compatibility
-#         self.num_layers = num_layers
+        # For compatibility
+        self.num_layers = num_layers
         
-#     def forward(self, features, captions):
-#         # Process input features
-#         pixel_values = features.unsqueeze(-1).unsqueeze(-1)  # Adjust dimensions for BLIP
+    def forward(self, features, captions):
+        # Process input features
+        pixel_values = features.unsqueeze(-1).unsqueeze(-1)  # Adjust dimensions for BLIP
         
-#         # Generate BLIP embeddings
-#         outputs = self.model(
-#             pixel_values=pixel_values,
-#             decoder_input_ids=captions[:, :-1],
-#             output_hidden_states=True
-#         )
+        # Generate BLIP embeddings
+        outputs = self.model(
+            pixel_values=pixel_values,
+            decoder_input_ids=captions[:, :-1],
+            output_hidden_states=True
+        )
         
-#         # Project to custom vocabulary
-#         hidden_states = outputs.decoder_hidden_states[-1]
-#         logits = self.output_projection(self.drop(hidden_states))
+        # Project to custom vocabulary
+        hidden_states = outputs.decoder_hidden_states[-1]
+        logits = self.output_projection(self.drop(hidden_states))
         
-#         return logits
+        return logits
         
-#     def generate_caption(self, features, max_len=20, vocab=None):
-#         with torch.no_grad():
-#             # Process input features
-#             pixel_values = features.unsqueeze(-1).unsqueeze(-1)
+    def generate_caption(self, features, max_len=20, vocab=None):
+        with torch.no_grad():
+            # Process input features
+            pixel_values = features.unsqueeze(-1).unsqueeze(-1)
             
-#             # Generate caption using BLIP
-#             outputs = self.model.generate(
-#                 pixel_values=pixel_values,
-#                 max_length=max_len,
-#                 num_beams=5,
-#                 early_stopping=True
-#             )
+            # Generate caption using BLIP
+            outputs = self.model.generate(
+                pixel_values=pixel_values,
+                max_length=max_len,
+                num_beams=5,
+                early_stopping=True
+            )
             
-#             # Decode and map to custom vocabulary
-#             generated_text = self.processor.decode(outputs[0], skip_special_tokens=True)
-#             tokens = generated_text.split()
+            # Decode and map to custom vocabulary
+            generated_text = self.processor.decode(outputs[0], skip_special_tokens=True)
+            tokens = generated_text.split()
             
-#             # Map to custom vocabulary tokens
-#             caption_ids = []
-#             for token in tokens:
-#                 if token in vocab.stoi:
-#                     caption_ids.append(vocab.stoi[token])
-#                 else:
-#                     caption_ids.append(vocab.stoi["<UNK>"])
+            # Map to custom vocabulary tokens
+            caption_ids = []
+            for token in tokens:
+                if token in vocab.stoi:
+                    caption_ids.append(vocab.stoi[token])
+                else:
+                    caption_ids.append(vocab.stoi["<UNK>"])
                     
-#             return [vocab.itos[idx] for idx in caption_ids]
+            return [vocab.itos[idx] for idx in caption_ids]
 class GPT2Decoder(nn.Module):
     def __init__(self, vocab_size, embed_size, hidden_size, custom_vocab, num_layers=1, drop_prob=0.3):
         super(GPT2Decoder, self).__init__()
         # Load pre-trained GPT-2 model and tokenizer
-        self.gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2')
-        self.gpt2_tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+        self.gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2-large')
+        self.gpt2_tokenizer = GPT2Tokenizer.from_pretrained('gpt2-large')
 
         # Set default special tokens if not defined
         if self.gpt2_tokenizer.pad_token_id is None:
@@ -482,22 +482,45 @@ class GPT2Decoder(nn.Module):
             self.gpt2_tokenizer.bos_token = self.gpt2_tokenizer.convert_tokens_to_ids("<|endoftext|>") 
         if self.gpt2_tokenizer.eos_token_id is None:
             self.gpt2_tokenizer.eos_token = self.gpt2_tokenizer.convert_tokens_to_ids("<|endoftext|>") 
+
+        # Linear layer to map GPT-2 hidden states to custom vocab size (for output)
+        self.image_projection = nn.Sequential(
+            nn.Linear(embed_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(drop_prob),
+            nn.Linear(hidden_size, self.gpt2_model.config.n_embd),
+            nn.LayerNorm(self.gpt2_model.config.n_embd)
+        )
+
+        self.layer_norm = nn.LayerNorm(self.gpt2_model.config.n_embd)
         
+        self.output_projection = nn.Sequential(
+            nn.Linear(self.gpt2_model.config.n_embd, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(drop_prob),
+            nn.Linear(hidden_size, vocab_size)
+        )
+
         # Store custom vocabulary for mapping back to dataset tokens
         self.custom_vocab = custom_vocab
         self.custom_vocab_size = vocab_size
-
-        # Linear layer to map GPT-2 hidden states to custom vocab size (for output)
-        self.image_projection = nn.Linear(embed_size, self.gpt2_model.config.n_embd)
-        self.output_projection = nn.Linear(self.gpt2_model.config.n_embd, vocab_size)
         self.drop = nn.Dropout(drop_prob)
-
-        # Store num_layers for compatibility with checkpoint saving
-        self.num_layers = num_layers  # Store the passed value for compatibility, though not used directly
+        self.num_layers = num_layers 
 
         # Create a mapping from custom vocab to GPT-2 vocab (approximate)
         self.custom_to_gpt2_map = self._create_vocab_mapping()
 
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights using Xavier initialization."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def _create_vocab_mapping(self):
         """Create an approximate mapping from custom vocab to GPT-2 vocab."""
@@ -552,19 +575,25 @@ class GPT2Decoder(nn.Module):
         batch_size = captions.size(0)
         device = captions.device
 
-        # 1. Project image features
-        img_embeds = self.image_projection(features).unsqueeze(1)  # [batch_size, 1, gpt2_dim]
+        # Project and normalize image features
+        img_embeds = self.image_projection(features).unsqueeze(1)
+        img_embeds = self.layer_norm(img_embeds)
 
-        # 2. Prepare input sequence (excluding last token)
+        # Prepare input sequence (excluding last token) and target sequence
         input_sequence = captions[:, :-1]  # Remove last token for input
         target_sequence = captions[:, 1:]   # Remove first token for target
         
-        # 3. Map to GPT-2 tokens
+        # Map to GPT-2 tokens
         gpt2_input_ids = torch.zeros_like(input_sequence, dtype=torch.long, device=device)
         for b in range(batch_size):
             gpt2_input_ids[b] = self._map_custom_to_gpt2(input_sequence[b])
 
-        # 4. Get token embeddings
+        # Map target sequence to GPT-2 tokens
+        gpt2_target_ids = torch.zeros_like(target_sequence, dtype=torch.long, device=device)
+        for b in range(batch_size):
+            gpt2_target_ids[b] = self._map_custom_to_gpt2(target_sequence[b])
+
+        # Get token embeddings
         input_embeds = self.gpt2_model.transformer.wte(gpt2_input_ids)
         
         # 5. Concatenate image embeddings with input embeddings
@@ -576,29 +605,24 @@ class GPT2Decoder(nn.Module):
             dtype=torch.long,
             device=device
         )
-        
-        # 7. Map target sequence to GPT-2 tokens
-        labels = torch.zeros_like(target_sequence, dtype=torch.long, device=device)
-        for b in range(batch_size):
-            labels[b] = self._map_custom_to_gpt2(target_sequence[b])
-        
-        # 8. Create position IDs
+
+        # 7. Create position IDs (moved before GPT-2 forward pass)
         position_ids = torch.arange(
             inputs_embeds.size(1), 
             dtype=torch.long, 
             device=device
         ).unsqueeze(0).expand(batch_size, -1)
 
-        # 9. Forward through GPT-2
+        # 8. Forward through GPT-2
         outputs = self.gpt2_model(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            position_ids=position_ids,
-            labels=None,  # Don't use internal loss calculation
+            position_ids=position_ids,  # Now position_ids is defined
+            labels=None,
             output_hidden_states=True
         )
 
-        # 10. Project to custom vocabulary size
+        # 9. Project to custom vocabulary size
         hidden_states = outputs.hidden_states[-1]
         logits = self.output_projection(self.drop(hidden_states[:, 1:]))  # Remove image token predictions
 
@@ -985,7 +1009,12 @@ def create_data_loader(batch_size=4, num_workers=0, dataset_type='flickr8k'):
     """Create data loader with transforms for specified dataset."""
     transforms = T.Compose([
         T.Resize((224, 224)),
-        T.ToTensor()
+        T.RandomHorizontalFlip(p=0.5),
+        T.ColorJitter(brightness=0.2, contrast=0.2),
+        T.RandomAffine(degrees=5, translate=(0.1, 0.1)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], 
+                    std=[0.229, 0.224, 0.225])
     ])
     
     # Get dataset configuration
@@ -1029,17 +1058,57 @@ def eval_intermediate_model_dur_train(epoch, model, data_loader, dataset, device
 
     model.train()
 
-def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rate=0.0001, print_every=2000, dataset_type='flickr8k', val_fraction=0.2, decoder_type='lstm', start_epoch=1, optimizer=None, scheduler=None, encoder_type='resnet'):
+def compute_diversity_loss(outputs):
+    """Compute diversity loss to encourage varied word usage.
+    
+    Args:
+        outputs: Predicted logits [batch_size, seq_len, vocab_size]
+    Returns:
+        Diversity loss tensor
+    """
+    # Get probability distribution over vocabulary
+    probs = torch.softmax(outputs, dim=-1)
+    
+    # Calculate average word distribution across batch and sequence
+    avg_probs = probs.mean(dim=[0,1])
+    
+    # Penalize peaky distributions using negative entropy
+    entropy = -(avg_probs * torch.log(avg_probs + 1e-10)).sum()
+    return -0.1 * entropy  # Negative to maximize entropy
+
+def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rate=0.0001, print_every=2000, dataset_type='flickr8k', val_fraction=0.2, decoder_type='lstm', start_epoch=1, optimizer=None, scheduler=None, encoder_type='resnet', gradient_clip_val=1.0, weight_decay=0.01, warmup_epochs=2):
     # Memory optimization
     torch.cuda.empty_cache()
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    """Train the model with model saving and loss tracking, and visualize loss after each epoch."""
-    criterion = nn.CrossEntropyLoss(ignore_index=dataset.vocab.stoi["<PAD>"])
+    # Loss criterion
+    criterion = nn.CrossEntropyLoss(
+        ignore_index=dataset.vocab.stoi["<PAD>"],
+        label_smoothing=0.1  # Reduce model overconfidence
+    )
+
+    # Setup optimizer with weight decay if not provided
     if optimizer is None:
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            betas=(0.9, 0.999)
+        )
+    
+    # Calculate warmup steps
+    warmup_steps = len(data_loader) * warmup_epochs
+
+    # Learning rate warmup function
+    def get_lr_factor(current_step):
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        return 1.0
+
+    # Training loop
     vocab_size = len(dataset.vocab)
+    total_steps = 0
     
     # Create model save directory with dataset type
     model_save_dir = os.path.join(MODEL_SAVE_DIR, dataset_type, f"{encoder_type}_{decoder_type}")
@@ -1113,6 +1182,8 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
     for eidx, epoch in enumerate(range(start_epoch, start_epoch + num_epochs), start=1):
         model.train()
         epoch_loss = 0.0
+        epoch_ce_loss = 0.0
+        epoch_div_loss = 0.0
         progress_msg = f"Epoch {epoch}/{total_epochs}"
         
         # GPU memory monitoring
@@ -1127,26 +1198,54 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         for i, (images, captions) in enumerate(tqdm(train_loader, desc=progress_msg)):
             batch_start_time = time.time()
             
+            # Update learning rate for warmup
+            if total_steps < warmup_steps:
+                lr_factor = get_lr_factor(total_steps)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = learning_rate * lr_factor
+
             images, captions = images.to(device, non_blocking=True), captions.to(device, non_blocking=True)
             optimizer.zero_grad()
             outputs = model(images, captions)
             # For LSTM decoder, outputs has one extra time step due to prepended image feature
             if hasattr(model.decoder, 'lstm') and not hasattr(model.decoder, 'attention'):
                 outputs = outputs[:, 1:, :]
-            loss = criterion(outputs.reshape(-1, vocab_size), captions[:, 1:].reshape(-1))
-            loss.backward()
+            
+            # Compute main cross-entropy loss with label smoothing
+            ce_loss = criterion(outputs.reshape(-1, vocab_size), 
+                              captions[:, 1:].reshape(-1))
+            
+            # Add diversity loss
+            diversity_loss = compute_diversity_loss(outputs)
+            
+            # Combine losses
+            total_loss = ce_loss + diversity_loss
+            total_loss.backward()
+
+            # Gradient clipping
+            if gradient_clip_val > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_val)
+
             optimizer.step()
-            epoch_loss += loss.item()
+
+            # Track different loss components
+            epoch_loss += total_loss.item()
+            epoch_ce_loss += ce_loss.item()
+            epoch_div_loss += diversity_loss.item()
+
+            total_steps += 1
             
             batch_time = time.time() - batch_start_time
             batch_times.append(batch_time)
-            # if (i > 10): break
+            if (i > 10): break
           
         avg_epoch_loss = epoch_loss / len(train_loader)
+        avg_ce_loss = epoch_ce_loss / len(train_loader)
+        avg_div_loss = epoch_div_loss / len(train_loader)
         epoch_time = time.time() - epoch_start_time
         avg_batch_time = sum(batch_times) / len(batch_times)
         
-        tqdm.write(f"Epoch {epoch} finished. Final batch loss: {loss.item():.4f}")
+        tqdm.write(f"Epoch {epoch} finished. Final batch loss: {total_loss.item():.4f}")
         tqdm.write(f"Epoch time: {epoch_time:.2f}s, Avg batch time: {avg_batch_time:.3f}s")
         
         # GPU memory after epoch
@@ -1162,11 +1261,13 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         val_loss = calculate_validation_loss(model, val_loader, criterion, vocab_size, device, val_fraction=1.0)
         validation_losses.append(val_loss)
         print(f"Epoch {epoch} completed ({epoch}/{total_epochs}):")
-        print(f"  Training Loss: {avg_epoch_loss:.5f}")
+        print(f"  Total Loss: {avg_epoch_loss:.5f}")
+        print(f"  Cross-Entropy Loss: {avg_ce_loss:.5f}")
+        print(f"  Diversity Loss: {avg_div_loss:.5f}")
         print(f"  Validation Loss: {val_loss:.5f}")
 
         # Learning rate scheduling
-        if scheduler is not None:
+        if scheduler is not None and total_steps >= warmup_steps:
             # Step the scheduler based on its type
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(val_loss)
@@ -1282,7 +1383,7 @@ def calculate_validation_loss(model, data_loader, criterion, vocab_size, device,
             loss = criterion(outputs.reshape(-1, vocab_size), captions[:, 1:].reshape(-1))
             total_val_loss += loss.item()
             val_batches += 1
-            # if(i >= 1): break  # Limit to first few batches for speed
+            if(i >= 1): break  # Limit to first few batches for speed
     
     model.train()
     return total_val_loss / val_batches if val_batches > 0 else float('inf')
@@ -1391,7 +1492,12 @@ def test_model(model, dataset, device, num_samples=5, dataset_type='flickr8k'):
     # Create a simple data loader for testing
     transforms = T.Compose([
         T.Resize((224, 224)),
-        T.ToTensor()
+        T.RandomHorizontalFlip(p=0.5),
+        T.ColorJitter(brightness=0.2, contrast=0.2),
+        T.RandomAffine(degrees=5, translate=(0.1, 0.1)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], 
+                    std=[0.229, 0.224, 0.225])
     ])
     
     # Get dataset configuration
@@ -1568,6 +1674,9 @@ def main(args):
             num_epochs=args.epochs, 
             print_every=1000, 
             learning_rate=args.learning_rate,  # Use args.learning_rate directly
+            gradient_clip_val=args.gradient_clip_val,
+            weight_decay=args.weight_decay,
+            warmup_epochs=args.warmup_epochs,
             dataset_type=args.dataset_type if hasattr(args, 'dataset_type') else args.dataset, 
             start_epoch=start_epoch, 
             optimizer=optimizer, 
@@ -1644,6 +1753,10 @@ if __name__ == "__main__":
     parser.add_argument('--save_attention_viz', action='store_true', help='Save attention visualizations (only for attention decoder)')
     parser.add_argument('--attention_viz_samples', type=int, default=3, help='Number of attention visualization samples')
     parser.add_argument('--advanced_attention_viz', action='store_true', help='Create advanced attention visualizations with heatmaps')
+    parser.add_argument('--gradient_clip_val', type=float, default=1.0, 
+                    help='Gradient clipping max norm value')
+    parser.add_argument('--weight_decay', type=float, default=0.01, 
+                        help='Weight decay for AdamW optimizer')
     args = parser.parse_args()
 
     # Set paths for backward compatibility
