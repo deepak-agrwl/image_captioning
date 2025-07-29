@@ -472,8 +472,8 @@ class GPT2Decoder(nn.Module):
     def __init__(self, vocab_size, embed_size, hidden_size, custom_vocab, num_layers=1, drop_prob=0.3):
         super(GPT2Decoder, self).__init__()
         # Load pre-trained GPT-2 model and tokenizer
-        self.gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2-large')
-        self.gpt2_tokenizer = GPT2Tokenizer.from_pretrained('gpt2-large')
+        self.gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2')
+        self.gpt2_tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 
         # Set default special tokens if not defined
         if self.gpt2_tokenizer.pad_token_id is None:
@@ -1237,7 +1237,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
             
             batch_time = time.time() - batch_start_time
             batch_times.append(batch_time)
-            if (i > 10): break
+            # if (i > 10): break
           
         avg_epoch_loss = epoch_loss / len(train_loader)
         avg_ce_loss = epoch_ce_loss / len(train_loader)
@@ -1383,7 +1383,7 @@ def calculate_validation_loss(model, data_loader, criterion, vocab_size, device,
             loss = criterion(outputs.reshape(-1, vocab_size), captions[:, 1:].reshape(-1))
             total_val_loss += loss.item()
             val_batches += 1
-            if(i >= 1): break  # Limit to first few batches for speed
+            # if(i >= 1): break  # Limit to first few batches for speed
     
     model.train()
     return total_val_loss / val_batches if val_batches > 0 else float('inf')

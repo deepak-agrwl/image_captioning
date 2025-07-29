@@ -96,7 +96,7 @@ python flickr_image_caption_with_pytorch_resnet_lstm.py \
 
 ### 7. Train with Flickr30k + ViT encoder + Gpt2 decoder + Cosine LR Scheduling [fine tuned] [RTX 4090]
 ```bash
-python flickr_image_caption_with_pytorch_resnet_lstm.py --dataset_type flickr30k --decoder gpt2 --encoder vit --num_workers 12 --epochs 30 --batch_size 96 --learning_rate 0.00001 --warmup_epochs 2 --use_scheduler --scheduler_type cosine --scheduler_t_max 30 --min_lr 1e-7 --gradient_clip_val 1.0 --weight_decay 0.01
+python flickr_image_caption_with_pytorch_resnet_lstm.py --dataset_type flickr30k --decoder gpt2 --encoder vit --num_workers 8 --epochs 30 --batch_size 32 --learning_rate 0.00001 --warmup_epochs 2 --use_scheduler --scheduler_type cosine --scheduler_t_max 30 --min_lr 1e-7 --gradient_clip_val 1.0 --weight_decay 0.01
 ```
 
 ## 📋 Overview
