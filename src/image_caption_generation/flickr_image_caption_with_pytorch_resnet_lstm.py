@@ -472,8 +472,8 @@ class GPT2Decoder(nn.Module):
     def __init__(self, vocab_size, embed_size, hidden_size, custom_vocab, num_layers=1, drop_prob=0.3):
         super(GPT2Decoder, self).__init__()
         # Load pre-trained GPT-2 model and tokenizer
-        self.gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2')
-        self.gpt2_tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+        self.gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2-medium')
+        self.gpt2_tokenizer = GPT2Tokenizer.from_pretrained('gpt2-medium')
 
         # Set default special tokens if not defined
         if self.gpt2_tokenizer.pad_token_id is None:

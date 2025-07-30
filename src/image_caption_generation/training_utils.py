@@ -32,7 +32,7 @@ def save_model_checkpoint(model, optimizer, scheduler, epoch, avg_epoch_loss, va
     
     # Delete previous checkpoints
     for old_file in os.listdir(model_save_dir):
-        if old_file.startswith('model_epoch') and old_file.endswith('.pth'):
+        if old_file.startswith('model_epoch') and old_file.endswith('.pth') and old_file != f"model_epoch{epoch}.pth":
             old_file_path = os.path.join(model_save_dir, old_file)
             try:
                 os.remove(old_file_path)
