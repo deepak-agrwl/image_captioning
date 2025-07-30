@@ -1077,6 +1077,50 @@ def compute_diversity_loss(outputs):
     return -0.1 * entropy  # Negative to maximize entropy
 
 def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rate=0.0001, print_every=2000, dataset_type='flickr8k', val_fraction=0.2, decoder_type='lstm', start_epoch=1, optimizer=None, scheduler=None, encoder_type='resnet', gradient_clip_val=1.0, weight_decay=0.01, warmup_epochs=2):
+    # ====== Checkpoint resume logic =======
+    import glob
+    checkpoint_dir = "./checkpoints"  # Hardcoded checkpoint directory
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_pattern = os.path.join(checkpoint_dir, "model_epoch*.pth")
+    checkpoint_files = glob.glob(checkpoint_pattern)
+    latest_epoch = None
+    latest_ckpt = None
+
+    if checkpoint_files:
+        # Extract epoch numbers from filenames and pick the largest
+        def extract_epoch(fname):
+            import re
+            match = re.search(r"model_epoch(\d+)\.pth", os.path.basename(fname))
+            return int(match.group(1)) if match else -1
+        checkpoint_files = sorted(checkpoint_files, key=extract_epoch)
+        latest_ckpt = max(checkpoint_files, key=extract_epoch)
+        latest_epoch = extract_epoch(latest_ckpt)
+    if latest_ckpt and os.path.exists(latest_ckpt):
+        print(f"Resuming from checkpoint: {latest_ckpt}")
+        checkpoint = torch.load(latest_ckpt, map_location=device)
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        # Only replace optimizer/scheduler if available and present in checkpoint
+        if optimizer is None or 'optimizer_state_dict' in checkpoint:
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=learning_rate,
+                weight_decay=weight_decay,
+                betas=(0.9, 0.999)
+            )
+            if 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if ('scheduler_state_dict' in checkpoint) and (scheduler is not None):
+            try:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            except Exception:
+                print("Warning: Failed to load scheduler state from checkpoint, continuing with fresh scheduler.")
+        # Resume training from next epoch
+        start_epoch = checkpoint.get('epoch', latest_epoch) + 1
+        print(f"Resumed training will start from epoch {start_epoch}")
+    else:
+        print(f"No checkpoint found in {checkpoint_dir}, starting training from scratch.")
+
     # Memory optimization
     torch.cuda.empty_cache()
     torch.backends.cudnn.benchmark = True
