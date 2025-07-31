@@ -356,6 +356,7 @@ def save_detailed_results(model_path, dataset_type, hyperparams, metrics,
 
 def main():
     """Main function with command line interface."""
+    start_time = time.time()
     parser = argparse.ArgumentParser(description="Evaluate Image Caption Generation Models")
     
     # Required arguments
@@ -417,7 +418,12 @@ def main():
         )
         
         print("\nEvaluation completed successfully!")
-        
+        end_time = time.time()
+        #print time in minutes and seconds
+        elapsed_time = end_time - start_time
+        minutes = int(elapsed_time // 60)
+        seconds = elapsed_time % 60
+        print(f"Evaluation time: {minutes}m {seconds:.2f}s")
     except Exception as e:
         print(f"\nError during evaluation: {e}")
         import traceback

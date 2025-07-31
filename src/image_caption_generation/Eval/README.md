@@ -18,6 +18,13 @@ python eval.py \
     --eval_fraction 0.2
 ```
 
+### Evaluate and push the logs ( stdout and stderr ) to a file
+
+```bash
+python ./Eval/eval.py --model_path "/workspace/image_captioning/resources/output/flickr30k_vit_gpt2_ep30_bs128_lr1e5_cosine_20250730_110806/flickr30k/vit_gpt2/best_model.pth" --dataset_type flickr30k --batch_size 256 --num_workers 32 --device auto  --output_dir ./e
+val_results_final    --eval_fraction 0.2 2>&1 | tee ./eval_results.log
+```
+
 ## Files
 
 - `eval.py` - Main evaluation script with command line interface
