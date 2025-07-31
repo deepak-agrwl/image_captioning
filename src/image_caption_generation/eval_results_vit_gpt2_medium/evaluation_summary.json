@@ -1,0 +1,22 @@
+{
+  "model_path":"\/workspace\/image_captioning\/resources\/output\/flickr30k_vit_gpt2_ep30_bs128_lr1e5_cosine_20250730_110806\/flickr30k\/vit_gpt2\/best_model.pth",
+  "dataset_type":"flickr30k",
+  "eval_fraction":0.2,
+  "hyperparameters":{
+    "embed_size":512,
+    "hidden_size":null,
+    "vocab_size":7666,
+    "num_layers":1,
+    "decoder_type":"gpt2",
+    "encoder_type":"vit"
+  },
+  "metrics":{
+    "bleu":0.0924392401,
+    "wer":0.8989149643,
+    "rouge":0.163266192,
+    "cosine_similarity":0.1559952945,
+    "cosine_similarity_std":0.1335143447
+  },
+  "num_samples":31783,
+  "evaluation_timestamp":"2025-07-31 20:47:34"
+}

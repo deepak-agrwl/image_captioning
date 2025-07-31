@@ -27,6 +27,10 @@ from torch.utils.data import DataLoader, random_split, Subset
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import warnings
+
+# Suppress the specific transformers deprecation warning
+warnings.filterwarnings("ignore", category=FutureWarning, module="torch.nn.modules.module")
 
 # Add parent directory to path to import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
