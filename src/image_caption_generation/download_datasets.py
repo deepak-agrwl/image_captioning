@@ -79,11 +79,12 @@ def extract_zip(zip_path, extract_to):
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             # Get total number of files for progress indication
-            total_files = len(zip_ref.namelist())
+            members = zip_ref.namelist()
+            total_files = len(members)
             print(f"Found {total_files} files to extract")
             
             for member in tqdm(members, desc="Extracting", unit="file"):
-                zip_ref.extractall(extract_to)
+                zip_ref.extract(member, extract_to)
         
         print(f"✓ Successfully extracted {zip_path}")
         os.remove(zip_path)  # Delete the zip file after successful extraction
