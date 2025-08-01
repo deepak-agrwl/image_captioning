@@ -1097,7 +1097,7 @@ def train_model(model, data_loader, dataset, device, num_epochs=20, learning_rat
         latest_epoch = extract_epoch(latest_ckpt)
     if latest_ckpt and os.path.exists(latest_ckpt):
         print(f"Resuming from checkpoint: {latest_ckpt}")
-        checkpoint = torch.load(latest_ckpt, map_location=device)
+        checkpoint = torch.load(latest_ckpt, map_location=device, weights_only=False)
         if 'model_state_dict' in checkpoint:
             model.load_state_dict(checkpoint['model_state_dict'])
         # Only replace optimizer/scheduler if available and present in checkpoint
