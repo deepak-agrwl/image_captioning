@@ -1,0 +1,12 @@
+# Minimal requirements for running trained_model_ui.py
+
+streamlit
+torch>=1.13.1
+torchvision>=0.14.1
+transformers>=4.36.2
+Pillow
+numpy
+spacy
+
+# If your model or vocabulary was serialized with pandas, uncomment the following line:
+# pandas
